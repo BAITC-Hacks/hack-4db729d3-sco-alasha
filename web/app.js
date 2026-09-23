@@ -1,7 +1,7 @@
 /* Граф денег — фронтенд. Все gid — строки (18-значные числа не помещаются в JS Number). */
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
-const S = { summary: null, mode: "top", radius: 1, sel: null, net: null, nodes: null, edges: null, removed: new Set(), flowTimer: null };
+const S = { summary: null, mode: "top", radius: 1, sel: null, net: null, nodes: null, edges: null, removed: new Set(), flowTimer: null, view: "node", graphRequest: 0, nodeRequest: 0, asking: false };
 
 const api = async (url, opts) => {
   const r = await fetch(url, opts);
@@ -12,11 +12,35 @@ const fmtKZT = (x) => x >= 1e6 ? (x / 1e6).toFixed(1).replace(".", ",") + " мл
 const fmtN = (x) => Number(x).toLocaleString("ru-RU");
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const short = (g) => "…" + String(g).slice(-6);
-const roleBadge = (role) => {
-  const c = S.summary.colors[role];
-  return `<span class="badge" style="color:${c};border-color:${c}55;background:${c}18">● ${S.summary.role_ru[role]}</span>`;
+
+const COLORS = { coordinator: "#bd8078", consolidator: "#c7a071", distributor: "#a593bb", transit: "#7aa0b6", terminal: "#80a893", peripheral: "#b1beb5" };
+const INKS = { coordinator: "#985c56", consolidator: "#9b7646", distributor: "#807092", transit: "#577f96", terminal: "#567f69", peripheral: "#788e7e" };
+const paths = {
+ network: '<circle cx="5" cy="6" r="3"/><circle cx="19" cy="6" r="3"/><circle cx="12" cy="19" r="3"/><path d="M8 6h8M6.5 8.5l4 8M17.5 8.5l-4 8"/>',
+ spark: '<path d="m12 3 2.7 6.3L21 12l-6.3 2.7L12 21l-2.7-6.3L3 12l6.3-2.7L12 3ZM20 2v4M18 4h4"/>',
+ grid: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
+ shield: '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/>',
+ book: '<path d="M12 5v16M3 4c4-1 6-1 9 1 3-2 5-2 9-1v15c-4-1-6-1-9 1-3-2-5-2-9-1V4Z"/>',
+ search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
+ download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
+ arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
+ users: '<circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6m2 4c3 1 3 3 3 6"/>',
+ money: '<rect x="2" y="5" width="20" height="14" rx="3"/><circle cx="12" cy="12" r="3"/><path d="M6 12h.01M18 12h.01"/>',
+ fit: '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/><circle cx="12" cy="12" r="3"/>',
+ info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/>',
+ copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/>',
+ close: '<path d="m6 6 12 12M6 18 18 6"/>'
 };
+const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.info}</svg>`;
+const roleBadge = (role) => `<span class="badge" style="color:${INKS[role]}"><i></i>${S.summary.role_ru[role]}</span>`;
 const loader = (on) => $("#loader").classList.toggle("hidden", !on);
+let toastTimer;
+function toast(message) {
+  const el = $("#toast"); el.textContent = message; el.classList.remove("hidden");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.add("hidden"), 4500);
+}
+const handle = (promise) => Promise.resolve(promise).catch((e) => toast("Не удалось выполнить действие: " + e.message));
+
 
 /* ---------------- markdown (минимальный) + кликабельные gid */
 function md(text) {
@@ -38,89 +62,139 @@ function md(text) {
     }
   }
   if (list) out += `</${list}>`;
-  return out.replace(/\b(\d{15,20})\b/g, '<span class="gidlink" data-gid="$1">$1</span>');
+  return out.replace(/\b(\d{15,20})\b/g, '<button class="gidlink" data-gid="$1">$1</button>');
 }
 document.addEventListener("click", (e) => {
   const g = e.target.closest("[data-gid]");
-  if (g) { selectNode(g.dataset.gid, true); }
+  if (g) { handle(selectNode(g.dataset.gid, true)); $("#search-res").classList.remove("show"); }
 });
 
 /* ---------------- граф */
+
 function initGraph() {
   S.nodes = new vis.DataSet(); S.edges = new vis.DataSet();
   S.net = new vis.Network($("#graph"), { nodes: S.nodes, edges: S.edges }, {
     autoResize: true,
-    nodes: { shape: "dot", font: { color: "#cbd5e1", size: 11, face: "system-ui", strokeWidth: 3, strokeColor: "#070b16" }, borderWidth: 1.5 },
-    edges: { arrows: { to: { enabled: true, scaleFactor: 0.55 } }, smooth: { type: "continuous" }, color: { color: "#475569", opacity: 0.55, highlight: "#fbbf24", hover: "#94a3b8" }, selectionWidth: 2 },
-    physics: { solver: "barnesHut", barnesHut: { gravitationalConstant: -9000, springLength: 130, springConstant: 0.03, damping: 0.25 }, stabilization: { iterations: 250 } },
-    interaction: { hover: true, tooltipDelay: 120, navigationButtons: false, keyboard: false },
-    layout: { improvedLayout: false },
+    nodes: { shape: "dot", font: { color: "#1f2937", size: 14, face: "Segoe UI", strokeWidth: 4, strokeColor: "#ffffff" }, borderWidth: 2 },
+    edges: { arrows: { to: { enabled: true, scaleFactor: .7 } }, smooth: { type: "continuous" }, color: { color: "#94a3b8", opacity: .6, highlight: "#426e52", hover: "#64748b" }, selectionWidth: 1 },
+    physics: { solver: "barnesHut", barnesHut: { gravitationalConstant: -5500, springLength: 110, springConstant: .04, damping: .3 }, stabilization: { iterations: 220 } },
+    interaction: { hover: true, tooltipDelay: 160, zoomSpeed: .55, navigationButtons: false },
+    layout: { improvedLayout: false, randomSeed: 42 }
   });
-  S.net.on("click", (p) => { if (p.nodes.length) selectNode(p.nodes[0], false); });
-  S.net.on("doubleClick", (p) => { if (p.nodes.length) { S.sel = p.nodes[0]; setMode("ego"); } });
-  S.net.on("stabilizationIterationsDone", () => { S.net.setOptions({ physics: false }); S.net.fit({ animation: { duration: 500 } }); });
+  S.net.on("click", (p) => { if (p.nodes.length) handle(selectNode(p.nodes[0], false)); });
+  S.net.on("doubleClick", async (p) => {
+    if (p.nodes.length) { await selectNode(p.nodes[0], false); await setMode("ego"); }
+  });
+  S.net.on("stabilizationIterationsDone", () => {
+    S.net.setOptions({ physics: false });
+    fitReadableGraph();
+  });
+  S.net.on("resize", () => requestAnimationFrame(() => {
+    if (S.net.getScale() < 0.8) fitReadableGraph();
+  }));
+}
+// Fit synchronously before checking the resulting scale; animated fit reports
+// the old scale until the animation finishes. Manual "fit all" stays unrestricted.
+function fitReadableGraph() {
+  const nodes = S.nodes.get();
+  if (!nodes.length || !$("#graph").clientWidth || !$("#graph").clientHeight) return;
+  S.net.fit({ padding: 40, animation: false });
+  if (S.net.getScale() < 0.8) {
+    const target = S.sel && S.nodes.get(S.sel) ? S.sel :
+      [...nodes].sort((a, b) => b._raw.priority - a._raw.priority)[0].id;
+    S.net.moveTo({ position: S.net.getPositions([target])[target], scale: 0.9, animation: false });
+  }
+}
+
+function refreshGraphSelection() {
+  S.nodes.update(S.nodes.get().map(n => toVisNode(n._raw, {
+    focus: S.mode === "ids" && n._focus, label: n._label
+  })));
+  if (S.nodes.get(S.sel)) {
+    S.net.selectNodes([S.sel]);
+    S.net.moveTo({ position: S.net.getPositions([S.sel])[S.sel],
+      scale: S.net.getScale() < 0.8 ? 0.9 : S.net.getScale(), animation: false });
+  }
 }
 
 function toVisNode(n, opts = {}) {
-  const removed = S.removed.has(n.id);
-  const c = n.color;
-  const size = 8 + 26 * n.priority + (opts.focus ? 10 : 0);
+  const removed = S.removed.has(n.id), selected = n.id === S.sel, c = COLORS[n.role];
   return {
-    id: n.id, label: n.label, shape: n.seed ? "star" : "dot", size,
-    color: removed ? { background: "#1e293b", border: "#ef4444" } : { background: c, border: opts.focus ? "#fbbf24" : c + "cc", highlight: { background: c, border: "#fbbf24" }, hover: { background: c, border: "#fff" } },
-    borderWidth: opts.focus ? 4 : removed ? 2 : 1.5,
+    id: n.id, label: opts.label || opts.focus || selected ? short(n.id) : "", shape: n.seed ? "star" : "dot",
+    size: 14 + 30 * n.priority + (selected ? 10 : 0),
+    color: removed ? {
+      background: "#cbd5e1", border: "#b45353",
+      highlight: { background: "#cbd5e1", border: "#991b1b" },
+      hover: { background: "#dbe2eb", border: "#991b1b" }
+    } : { background: c, border: opts.focus || selected ? "#426e52" : "#ffffff",
+      highlight: { background: c, border: "#426e52" }, hover: { background: c, border: "#739c80" } },
+    borderWidth: removed ? 3 : opts.focus || selected ? 4 : 2,
     shapeProperties: removed ? { borderDashes: [4, 3] } : {},
-    font: { color: removed ? "#475569" : "#cbd5e1" },
-    title: `${n.id}\n${n.role_ru} · уверенность ${n.score.toFixed(2)}\nприоритет ${n.priority.toFixed(3)} · колено ${n.depth}${n.seed ? " · seed" : ""}\n\n${n.evidence}`,
-    level: n.depth, _raw: n,
+    font: { color: "#1f2937", size: 14, strokeWidth: 4, strokeColor: "#ffffff" },
+    title: `${n.id}\n${n.role_ru} · уверенность ${n.score.toFixed(2)}\nприоритет ${n.priority.toFixed(3)} · колено ${n.depth}${n.seed ? " · исходный клиент" : ""}\n\n${n.evidence}`,
+    level: n.depth, _raw: n, _focus: !!opts.focus, _label: !!opts.label
   };
 }
+
+
 function renderGraph(g, { focus = [], hierarchical = false } = {}) {
   clearFlow();
   const fs = new Set(focus.map(String));
   const maxSum = Math.max(1, ...g.edges.map((e) => e.sum));
   S.net.setOptions({
-    layout: hierarchical ? { hierarchical: { enabled: true, direction: "LR", levelSeparation: 230, nodeSpacing: 70, sortMethod: "directed" } } : { hierarchical: { enabled: false }, improvedLayout: false },
+    layout: hierarchical ? { hierarchical: { enabled: true, direction: "LR", levelSeparation: 230, nodeSpacing: 120, sortMethod: "directed" } } : { hierarchical: { enabled: false }, improvedLayout: false },
     physics: hierarchical ? { enabled: false } : { enabled: true },
   });
   S.nodes.clear(); S.edges.clear();
-  S.nodes.add(g.nodes.map((n) => toVisNode(n, { focus: fs.has(n.id) })));
+  const labeled = new Set([...g.nodes].sort((a, b) => b.priority - a.priority).slice(0, 15).map(n => n.id));
+  S.nodes.add(g.nodes.map((n) => toVisNode(n, { focus: fs.has(n.id), label: labeled.has(n.id) })));
   S.edges.add(g.edges.map((e, i) => {
-    const w = 0.6 + 5 * Math.pow(Math.log1p(e.sum) / Math.log1p(maxSum), 3);
+    const w = 0.4 + 2.4 * Math.pow(Math.log1p(e.sum) / Math.log1p(maxSum), 3);
     const hot = fs.size <= 2 ? (fs.has(e.from) || fs.has(e.to)) : (fs.has(e.from) && fs.has(e.to));
     const dead = S.removed.has(e.from) || S.removed.has(e.to);
     return { id: "e" + i, from: e.from, to: e.to, width: w, _w: w, title: `${fmtKZT(e.sum)} · ${e.n_tx} перев.`,
-      color: dead ? { color: "#1e293b", opacity: 0.4 } : hot ? { color: "#f59e0b", opacity: 0.85 } : undefined };
+      color: dead ? { color: "#94a3b8", opacity: 0.45 } : hot ? { color: "#527b60", opacity: 0.85 } : { color: "#94a3b8", opacity: 0.6 } };
   }));
-  $("#graph-info").textContent = `${g.nodes.length} узлов · ${g.edges.length} связей · ★ seed · размер = приоритет · толщина = сумма`;
-  if (hierarchical) setTimeout(() => S.net.fit({ animation: { duration: 400 } }), 60);
+  $("#graph-info").textContent = `${g.nodes.length} узлов · ${g.edges.length} связей`;
+  $("#graph-title").textContent = ({top:"Карта ключевых связей",ego:"Окружение клиента",cluster:"Связи внутри кластера",flow:"Путь движения денег",ids:"Связи найденных клиентов"})[S.mode] || "Карта связей";
+  if (hierarchical) requestAnimationFrame(() => {
+    if (S.mode === "flow") fitReadableGraph();
+  });
   else { S.net.setOptions({ physics: { enabled: true } }); S.net.stabilize(260); }
 }
 
+
 async function loadGraph() {
+  const request = ++S.graphRequest;
   loader(true);
   try {
     let g, opts = {};
     if (S.mode === "ego" && S.sel) { g = await api(`/api/graph?mode=ego&gid=${S.sel}&radius=${S.radius}`); opts.focus = [S.sel]; }
-    else if (S.mode === "cluster" && S.sel) { const c = S.nodeData?.node?.cluster ?? 0; g = await api(`/api/graph?mode=cluster&cluster=${c}`); opts.focus = [S.sel]; }
-    else if (S.mode === "flow" && S.sel) { await playFlow(S.sel); return; }
+    else if (S.mode === "cluster" && S.sel) { g = await api(`/api/graph?mode=cluster&cluster=${S.nodeData.node.cluster}`); opts.focus = [S.sel]; }
+    else if (S.mode === "flow" && S.sel) { await playFlow(S.sel, request); return; }
     else { g = await api(`/api/graph?mode=top&n=${Math.max(45, S.removed.size + 20)}`); opts.focus = S.sel ? [S.sel] : []; }
+    if (request !== S.graphRequest) return;
     renderGraph(g, opts);
-  } finally { loader(false); }
+  } catch (e) { if (request === S.graphRequest) toast("Не удалось загрузить граф: " + e.message); }
+  finally { if (request === S.graphRequest) loader(false); }
 }
-function setMode(m) {
+async function setMode(m) {
+  if (m !== "top" && !S.nodeData) { toast("Сначала выберите клиента в списке или на графе"); return; }
   S.mode = m;
-  $$("#modes button").forEach((b) => b.classList.toggle("active", b.dataset.mode === m));
-  loadGraph();
+  $$("#modes button").forEach(b => { b.classList.toggle("active", b.dataset.mode === m); b.setAttribute("aria-pressed", String(b.dataset.mode === m)); });
+  $("#radius").classList.toggle("hidden", m !== "ego");
+  await loadGraph();
 }
+
 
 /* ---------------- анимация пути денег */
 function clearFlow() { if (S.flowTimer) { clearTimeout(S.flowTimer); S.flowTimer = null; } $("#flow-banner").classList.add("hidden"); }
-async function playFlow(gid) {
+async function playFlow(gid, request) {
   const f = await api(`/api/flow/${gid}`);
+  if (request !== S.graphRequest) return;
   renderGraph(f.graph, { focus: [gid], hierarchical: true });
   // все рёбра приглушаем
-  S.edges.update(S.edges.get().map((e) => ({ id: e.id, color: { color: "#334155", opacity: 0.35 }, width: Math.max(0.6, e._w * 0.6) })));
+  S.edges.update(S.edges.get().map((e) => ({ id: e.id, color: { color: "#94a3b8", opacity: 0.45 }, width: Math.max(0.6, e._w * 0.6) })));
   const edgeId = {};
   S.edges.get().forEach((e) => (edgeId[e.from + ">" + e.to] = e.id));
   const seq = [];
@@ -133,7 +207,7 @@ async function playFlow(gid) {
   const step = () => {
     if (i >= seq.length) { S.flowTimer = null; return; }
     const s = seq[i++], id = edgeId[s.from + ">" + s.to];
-    if (id) S.edges.update({ id, color: { color: s.up ? "#fbbf24" : "#38bdf8", opacity: 1 }, width: 5, label: fmtKZT(s.sum), font: { color: "#fde68a", size: 10, strokeWidth: 3, strokeColor: "#070b16", align: "top" } });
+    if (id) S.edges.update({ id, color: { color: s.up ? "#166534" : "#1d4ed8", opacity: 1 }, width: 5, label: fmtKZT(s.sum), font: { color: "#1f2937", size: 14, strokeWidth: 4, strokeColor: "#ffffff", align: "top" } });
     S.nodes.update({ id: s.to, borderWidth: 5 });
     S.flowTimer = setTimeout(step, 320);
   };
@@ -141,66 +215,61 @@ async function playFlow(gid) {
 }
 
 /* ---------------- выбор узла + карточка */
-async function selectNode(gid, focusGraph) {
-  gid = String(gid);
-  S.sel = gid;
-  $$(".item").forEach((it) => it.classList.toggle("sel", it.dataset.id === gid));
-  switchTab("node");
-  const d = await api(`/api/node/${gid}`);
-  S.nodeData = d;
-  renderNode(d);
-  if (focusGraph) { if (S.mode === "top") setMode("ego"); else loadGraph(); }
-  else if (S.nodes.get(gid)) S.net.selectNodes([gid]);
-}
 
+async function selectNode(gid, focusGraph, openDetail = true) {
+  gid = String(gid);
+  const request = ++S.nodeRequest;
+  try {
+    const d = await api(`/api/node/${encodeURIComponent(gid)}`);
+    if (request !== S.nodeRequest) return;
+    S.sel = gid; S.nodeData = d;
+    switchTab("node");
+    document.body.classList.remove("detail-collapsed");
+    document.body.classList.toggle("detail-open", openDetail);
+    $$(".item").forEach(it => it.classList.toggle("sel", it.dataset.gid === gid));
+    renderNode(d);
+    if (focusGraph) await setMode(["top", "ids"].includes(S.mode) ? "ego" : S.mode);
+    else if (["ego", "cluster", "flow"].includes(S.mode)) await loadGraph();
+    else if (S.nodes.get(gid)) refreshGraphSelection();
+  } catch (e) { toast("Клиент не найден или недоступен: " + e.message); }
+}
 function renderNode(d) {
-  const n = d.node, i = d.info, c = S.summary.colors[n.role];
+  const n = d.node, i = d.info;
   const pt = i.pass_through == null ? "—" : Math.round(i.pass_through * 100) + "%";
   const flags = [];
-  if (i.structuring_flag) flags.push(`признаки дробления у порога: ${Math.round(i.small_tx_share * 100)}% входящих переводов от 5 до 10 тыс ₸`);
-  if (i.anomaly_flag) flags.push(`аномальный профиль: ${i.anomaly_reason}`);
-  if (i.fast_transit_share >= 0.5) flags.push(`${Math.round(i.fast_transit_share * 100)}% исходящих ушло в течение 2 дней после поступления`);
-  if (i.max_payers_same_day >= 3) flags.push(`синхронные поступления: до ${i.max_payers_same_day} плательщиков в один день`);
-  if (i.cycles) flags.push(`участвует в ${i.cycles} циклах возврата средств (≤6 шагов)`);
-  if (n.depth === 4) flags.push(`4-е колено: исходящие не выгружены. P(пересылает дальше) = ${i.p_forward.toFixed(2)} → запросить выписку`);
-  if (n.seed) flags.push("seed: входящие извне выборки не видны, отдал/получил некорректно");
-  const prioNames = { role: "роль × уверенность", reach: "близость к seed", money: "оборот", pagerank: "PageRank", betw: "посредничество" };
-  const prioW = { role: 0.30, reach: 0.25, money: 0.20, pagerank: 0.15, betw: 0.10 };
-  const peers = (arr, dir) => (arr || []).slice(0, 8).map((p) => `
-    <div class="peer" data-gid="${p.gid}"><span><span class="g">${short(p.gid)}</span> ${roleBadge(p.role)}</span><span>${dir} ${fmtKZT(p.sum_kzt)}</span></div>`).join("") || '<div class="muted small">нет' + (dir === "→" && n.depth === 4 ? " (исходящие не выгружены)" : "") + "</div>";
+  if (i.structuring_flag) flags.push(`Признаки дробления: ${Math.round(i.small_tx_share * 100)}% входящих переводов от 5 до 10 тыс ₸.`);
+  if (i.anomaly_flag) flags.push(`Аномальный профиль: ${i.anomaly_reason}.`);
+  if (i.fast_transit_share >= .5) flags.push(`${Math.round(i.fast_transit_share * 100)}% исходящих ушло в течение 2 дней после поступления.`);
+  if (i.max_payers_same_day >= 3) flags.push(`До ${i.max_payers_same_day} плательщиков в один день.`);
+  if (i.cycles) flags.push(`Участвует в ${i.cycles} циклах (до 6 шагов).`);
+  if (n.depth === 4) flags.push(`Исходящие 4-го колена не выгружены. P(пересылает) = ${i.p_forward.toFixed(2)}. Запросите выписку.`);
+  if (n.seed) flags.push("Исходный клиент: входящие извне выборки не видны, отношение выхода к входу неполно.");
+  const prioNames = {role:"Роль × уверенность",reach:"Близость к seed",money:"Оборот",pagerank:"PageRank",betw:"Посредничество"};
+  const prioW = {role:.30,reach:.25,money:.20,pagerank:.15,betw:.10};
+  const peers = (arr, dir) => (arr || []).slice(0, 8).map(p => `<button class="peer" data-gid="${p.gid}" title="Открыть клиента ${p.gid}"><span><span class="g">${short(p.gid)}</span>${roleBadge(p.role)}</span><span>${dir} ${fmtKZT(p.sum_kzt)}</span></button>`).join("") || '<div class="empty-state">Нет переводов в выборке</div>';
+  const disclosure = (title, count, content) => `<details class="disclosure"><summary>${title}<span>${count ?? ""}</span></summary>${content}</details>`;
   $("#tab-node").innerHTML = `
-    <div class="node-head">
-      <div><div class="muted small">gid · колено ${n.depth} · кластер ${n.cluster}${n.seed ? " · <b style='color:var(--accent)'>★ seed</b>" : ""}</div>
-      <div class="node-gid">${n.id}</div></div>
-      <div style="text-align:right"><div class="muted small">приоритет</div><div style="font-size:22px;font-weight:800;color:var(--accent)">${n.priority.toFixed(2)}</div><div class="muted small">место ${i.priority_rank} из ${fmtN(S.summary.nodes)}</div></div>
-    </div>
-    <div class="node-role" style="color:${c}">${S.summary.role_ru[n.role]}</div>
-    <div class="conf">уверенность <div class="bar"><div style="width:${n.score * 100}%;background:${c}"></div></div> ${n.score.toFixed(2)}</div>
-    <div class="evidence">${esc(n.evidence)}</div>
-    <div class="grid">
-      <div class="metric"><b>${fmtKZT(i.in_kzt)}</b><span>получил от ${i.in_deg} плательщ. (${i.in_tx} перев.)</span></div>
-      <div class="metric"><b>${fmtKZT(i.out_kzt)}</b><span>отправил ${i.out_deg} получат. (${i.out_tx} перев.)</span></div>
-      <div class="metric"><b>${pt}</b><span>пропуск дальше (out/in)</span></div>
-      <div class="metric"><b>${i.near_seeds}</b><span>seed доходят за ≤2 перевода</span></div>
-    </div>
-    <div class="btn-row">
-      <button class="btn primary" id="btn-flow">▶ Путь денег</button>
-      <button class="btn" id="btn-ego">Окружение</button>
-      <button class="btn" id="btn-ask">🤖 Спросить AI об узле</button>
-    </div>
-    ${flags.length ? `<div class="block flags"><h4>На что обратить внимание</h4>${flags.map((f) => `<div>⚠ ${esc(f)}</div>`).join("")}</div>` : ""}
-    ${(i.data_requests || []).length ? `<div class="block"><h4>Рекомендуемые запросы данных</h4>${i.data_requests.map((r) => `<p>${esc(r.request)}<br><span class="muted small">${esc(r.reason)}</span></p>`).join("")}</div>` : ""}
-    <div class="block"><h4>Из чего сложился приоритет</h4>
-      ${Object.keys(prioNames).map((k) => `<div class="hbar"><span>${prioNames[k]} <span class="muted">×${prioW[k]}</span></span><div class="t"><div style="width:${d.prio[k] * 100}%"></div></div><span>${d.prio[k].toFixed(2)}</span></div>`).join("")}
-    </div>
-    <div class="block"><h4>Кто платил (${i.in_deg})</h4>${peers(d.neighbors.payers, "←")}</div>
-    <div class="block"><h4>Кому платил (${i.out_deg})</h4>${peers(d.neighbors.receivers, "→")}</div>
-    <div class="block"><h4>Переводы по датам (июль 2026)</h4>${txChart(d.tx)}</div>
+    <div class="node-top"><span class="node-avatar">${icon("users")}</span><div><small>Клиент сети</small><div class="node-short" title="${n.id}">${short(n.id)}</div></div><button class="icon" id="btn-copy-gid" aria-label="Скопировать полный gid" title="Скопировать полный gid">${icon("copy")}</button></div>
+    <h2 class="node-role">${S.summary.role_ru[n.role]}</h2>
+    <div class="node-context">Колено ${n.depth} <span>·</span> Кластер ${n.cluster}${n.seed ? " · Исходный клиент" : ""}</div>
+    <div class="priority-card"><div class="priority-line"><span>Приоритет проверки</span><b>${n.priority.toFixed(2)}</b></div><div class="priority-track"><i style="width:${n.priority * 100}%"></i></div><small>№ ${i.priority_rank} из ${fmtN(S.summary.nodes)} клиентов</small></div>
+    <div class="evidence"><span class="evidence-label">Почему стоит проверить</span>${esc(n.evidence)}</div>
+    <div class="grid"><div class="metric"><span class="metric-label">Входящий оборот ↙</span><b>${fmtKZT(i.in_kzt)}</b><span>${i.in_deg} плательщиков · ${i.in_tx} переводов</span></div><div class="metric"><span class="metric-label">Исходящий оборот ↗</span><b>${fmtKZT(i.out_kzt)}</b><span>${i.out_deg} получателей · ${i.out_tx} переводов</span></div></div>
+    <div class="btn-row node-actions"><button class="btn primary" id="btn-flow">${icon("arrow")}Путь денег</button><button class="btn" id="btn-ego">${icon("network")}Окружение</button><button class="btn ai-node-button" id="btn-ask">${icon("spark")}Спросить AI об этом клиенте</button></div>
+    <div class="node-meta"><div><span>Полный gid</span><b class="node-gid">${n.id}</b></div><div><span>Уверенность в роли</span><b>${n.score.toFixed(2)}</b></div><div><span>Отправил / получил</span><b>${pt}</b></div><div><span>Seed в пределах двух переводов</span><b>${i.near_seeds}</b></div></div>
+    ${flags.length ? disclosure("Сигналы для проверки", flags.length, flags.map(f => `<div class="flag">${esc(f)}</div>`).join("")) : ""}
+    ${(i.data_requests || []).length ? disclosure("Какие данные запросить", i.data_requests.length, i.data_requests.map(r => `<div class="request-note">${esc(r.request)}<small>${esc(r.reason)}</small></div>`).join("")) : ""}
+    ${disclosure("Из чего сложился приоритет", "", Object.keys(prioNames).map(k => `<div class="hbar"><span>${prioNames[k]} ×${prioW[k]}</span><div class="t"><div style="width:${d.prio[k]*100}%"></div></div><span>${d.prio[k].toFixed(2)}</span></div>`).join(""))}
+    ${disclosure("Кто переводил деньги", i.in_deg, peers(d.neighbors.payers, "←"))}
+    ${disclosure("Кому переводил деньги", i.out_deg, peers(d.neighbors.receivers, "→"))}
+    ${disclosure("Переводы по датам", "Июль 2026", txChart(d.tx))}
     <div class="disclaimer">Гипотеза для углублённой проверки, не вывод о виновности.</div>`;
-  $("#btn-flow").onclick = () => setMode("flow");
-  $("#btn-ego").onclick = () => setMode("ego");
-  $("#btn-ask").onclick = () => { switchTab("ai"); ask(`Объясни роль ${n.id} и кто его основные контрагенты`); };
+  $("#btn-flow").onclick = () => handle(setMode("flow"));
+  $("#btn-ego").onclick = () => handle(setMode("ego"));
+  $("#btn-ask").onclick = () => { switchTab("ai"); $("#ask-input").value = `Объясни роль ${n.id} и кто его основные контрагенты`; $("#ask-input").focus(); };
+  $("#btn-copy-gid").onclick = async () => { try { await navigator.clipboard.writeText(n.id); toast("Полный gid скопирован"); } catch { toast("Копирование недоступно. Полный gid можно выделить ниже в карточке."); } };
 }
+
 
 function txChart(tx) {
   if (!tx.length) return '<div class="muted small">нет переводов</div>';
@@ -210,17 +279,19 @@ function txChart(tx) {
   let bars = "";
   for (let d = 1; d <= 31; d++) {
     const x = 6 + (d - 1) * ((W - 12) / 31), v = byDay[d] || { in: 0, out: 0 }, hi = (v.in / mx) * 38, ho = (v.out / mx) * 38;
-    if (v.in) bars += `<rect x="${x}" y="${45 - hi}" width="8" height="${hi}" fill="#22c55e"><title>${d} июля: вход ${fmtKZT(v.in)}</title></rect>`;
-    if (v.out) bars += `<rect x="${x}" y="45" width="8" height="${ho}" fill="#ef4444"><title>${d} июля: выход ${fmtKZT(v.out)}</title></rect>`;
-    if (d % 5 === 1) bars += `<text x="${x}" y="${H}" fill="#64748b" font-size="9">${d}</text>`;
+    if (v.in) bars += `<rect x="${x}" y="${45 - hi}" width="8" height="${hi}" fill="#79a48d"><title>${d} июля: вход ${fmtKZT(v.in)}</title></rect>`;
+    if (v.out) bars += `<rect x="${x}" y="45" width="8" height="${ho}" fill="#c48980"><title>${d} июля: выход ${fmtKZT(v.out)}</title></rect>`;
+    if (d % 5 === 1) bars += `<text x="${x}" y="${H}" fill="#83968a" font-size="9">${d}</text>`;
   }
-  return `<svg viewBox="0 0 ${W} ${H + 2}"><line x1="0" y1="45" x2="${W}" y2="45" stroke="#1e2a44"/>${bars}</svg>
-    <div class="muted small"><span style="color:#22c55e">■</span> вход &nbsp; <span style="color:#ef4444">■</span> выход · ${tx.length} переводов</div>`;
+  return `<svg class="transaction-chart" viewBox="0 0 ${W} ${H + 2}"><line x1="0" y1="45" x2="${W}" y2="45" stroke="#e3ebe5"/>${bars}</svg>
+    <div class="muted small"><span style="color:#79a48d">■</span> вход &nbsp; <span style="color:#c48980">■</span> выход · ${tx.length} переводов</div>`;
 }
 
 /* ---------------- AI-аналитик */
 async function ask(q) {
-  q = q.trim(); if (!q) return;
+  q = q.trim(); if (!q || S.asking) return;
+  S.asking = true; $("#ask-form button").disabled = true;
+  $(".chat-empty")?.remove();
   const chat = $("#chat");
   chat.insertAdjacentHTML("beforeend", `<div class="msg user">${esc(q)}</div>`);
   const bot = document.createElement("div"); bot.className = "msg bot";
@@ -239,64 +310,65 @@ async function ask(q) {
     await new Promise((res) => setTimeout(res, 200));
     bot.querySelector(".ans").innerHTML = md(r.answer) + (r.highlight.length ? `<div class="btn-row"><button class="btn primary hl">Показать ${r.highlight.length} узлов на графе</button></div>` : "");
     const hl = bot.querySelector(".hl");
-    if (hl) hl.onclick = () => showIds(r.highlight);
-    if (r.highlight.length) showIds(r.highlight);
+    if (hl) hl.onclick = () => handle(showIds(r.highlight));
+    if (r.highlight.length) await showIds(r.highlight);
   } catch (e) { bot.innerHTML = `<div class="meta">ошибка</div>${esc(e.message)}`; }
   chat.scrollTop = chat.scrollHeight;
-}
-async function showIds(ids) {
-  loader(true);
-  try {
-    const g = await api(`/api/graph?mode=ids&ids=${ids.slice(0, 12).join(",")}`);
-    S.mode = "ids"; $$("#modes button").forEach((b) => b.classList.remove("active"));
-    renderGraph(g, { focus: ids });
-    $("#graph-info").textContent = `AI-аналитик: ${ids.length} найденных узлов (жёлтая обводка) и их контрагенты`;
-  } finally { loader(false); }
+  S.asking = false; $("#ask-form button").disabled = false;
 }
 
+async function showIds(ids) {
+  const request = ++S.graphRequest, shown = [...new Set(ids.map(String))].slice(0, 40);
+  loader(true);
+  try {
+    const g = await api(`/api/graph?mode=ids&ids=${shown.join(",")}`);
+    if (request !== S.graphRequest) return;
+    S.mode = "ids"; $("#radius").classList.add("hidden");
+    $$("#modes button").forEach(b => b.classList.remove("active"));
+    renderGraph(g, {focus: shown});
+    $("#graph-info").textContent = `${shown.length} найденных клиентов и их контрагенты`;
+  } finally { if (request === S.graphRequest) loader(false); }
+}
+
+
 /* ---------------- кластеры */
+
 async function renderClusters() {
   const cs = await api("/api/clusters");
-  $("#clusters").innerHTML = `<div class="muted small" style="margin-bottom:8px">Louvain на неориентированной проекции (вес = log(1+сумма)). Кластеров: ${cs.length}. Отсортированы по числу seed.</div>` +
-    cs.filter((c) => c.n_nodes > 1).map((c) => `
-    <div class="cl" data-cl="${c.cluster_id}" data-lead="${c.lead_gid}">
-      <div class="h"><span>Кластер ${c.cluster_id}</span><span class="muted">${c.n_nodes} узлов</span></div>
-      <div class="hyp">${esc(c.hypothesis)}</div>
-      <div class="nums"><span>★ ${c.n_seed} seed</span><span>${fmtKZT(c.sum_kzt_internal)} внутри</span><span class="muted">${esc(c.roles || "")}</span></div>
-    </div>`).join("");
-  $$(".cl").forEach((el) => el.onclick = async () => {
-    const lead = el.dataset.lead;
-    S.sel = String(lead); S.nodeData = await api(`/api/node/${lead}`);
-    S.mode = "cluster"; $$("#modes button").forEach((b) => b.classList.toggle("active", b.dataset.mode === "cluster"));
-    loader(true); try { renderGraph(await api(`/api/graph?mode=cluster&cluster=${el.dataset.cl}`), { focus: [lead] }); } finally { loader(false); }
-    $("#graph-info").textContent += ` · кластер ${el.dataset.cl}`;
-  });
+  $("#clusters").innerHTML = `<div class="cluster-summary">${cs.length} кластеров · Louvain · показаны группы из двух и более клиентов</div>` +
+    cs.filter(c => c.n_nodes > 1).map(c => `<button class="cl" data-cl="${c.cluster_id}" data-lead="${c.lead_gid}"><div class="h"><span>Кластер ${c.cluster_id}</span><span class="muted">${c.n_nodes} клиентов</span></div><div class="hyp">${esc(c.hypothesis)}</div><div class="nums"><span>★ ${c.n_seed} seed</span><span>${fmtKZT(c.sum_kzt_internal)}</span></div><div class="cluster-action">Исследовать связи ${icon("arrow")}</div></button>`).join("");
+  $$(".cl").forEach(el => el.onclick = () => handle((async () => { await selectNode(el.dataset.lead, false); await setMode("cluster"); })()));
 }
+
 
 /* ---------------- стресс-тест */
 let stressT = null;
+
 async function runStress() {
-  const n = +$("#stress-n").value; $("#stress-n-val").textContent = n;
-  const r = await api(`/api/simulate?top_n=${n}`);
-  S.removed = new Set(r.removed);
-  $("#stress-kpis").innerHTML = `
-    <div class="metric"><b>−${r.drop_pct.seed_reach_pairs}%</b><span>достижимость seed → узел</span></div>
-    <div class="metric"><b>−${r.drop_pct.flow_kzt}%</b><span>оборот в сети</span></div>
-    <div class="metric"><b>−${r.drop_pct.largest_component}%</b><span>крупнейшая компонента</span></div>`;
-  chart(r.curve, n);
-  if (S.mode !== "top") setMode("top"); else loadGraph();
-  $("#graph-info").textContent = `Стресс-тест: заблокировано ${n} узлов (тёмные, пунктирная красная обводка)`;
+  const n = +$("#stress-n").value;
+  $("#stress-n-val").textContent = n;
+  try {
+    const r = await api(`/api/simulate?top_n=${n}`);
+    if (S.view !== "stress" || n !== +$("#stress-n").value) return;
+    S.removed = new Set(r.removed);
+    $("#stress-kpis").innerHTML = `<div class="metric"><b>−${r.drop_pct.seed_reach_pairs}%</b><span>достижимость от seed</span></div><div class="metric"><b>−${r.drop_pct.flow_kzt}%</b><span>оборот в сети</span></div><div class="metric"><b>−${r.drop_pct.largest_component}%</b><span>крупнейшая компонента</span></div>`;
+    chart(r.curve, n);
+    await setMode("top");
+    if (S.view === "stress") $("#graph-info").textContent = `Блокировка ${n} узлов · серые узлы с пунктирной обводкой`;
+  } catch (e) { toast("Не удалось рассчитать сценарий: " + e.message); }
 }
+
+
 function chart(curve, n) {
   const W = 400, H = 210, P = 34, mx = 100, xs = curve.map((p) => p.n), xMax = Math.max(...xs);
   const X = (v) => P + (v / xMax) * (W - P - 10), Y = (v) => H - P + 6 - (v / mx) * (H - P - 10);
   const line = (k, col) => `<polyline fill="none" stroke="${col}" stroke-width="2.5" points="${curve.map((p) => X(p.n) + "," + Y(p[k])).join(" ")}"/>` + curve.map((p) => `<circle cx="${X(p.n)}" cy="${Y(p[k])}" r="3" fill="${col}"><title>${p.n}: −${p[k]}%</title></circle>`).join("");
   let grid = "";
-  for (let v = 0; v <= 100; v += 25) grid += `<line x1="${P}" x2="${W - 10}" y1="${Y(v)}" y2="${Y(v)}" stroke="#1e2a44"/><text x="4" y="${Y(v) + 4}" fill="#64748b" font-size="10">${v}%</text>`;
-  xs.forEach((v) => (grid += `<text x="${X(v) - 5}" y="${H}" fill="#64748b" font-size="10">${v}</text>`));
-  $("#stress-chart").innerHTML = `<svg viewBox="0 0 ${W} ${H + 4}">${grid}<line x1="${X(n)}" x2="${X(n)}" y1="10" y2="${H - P + 6}" stroke="#fbbf24" stroke-dasharray="3 3"/>${line("random", "#64748b")}${line("priority", "#fbbf24")}</svg>
-    <div class="small"><span style="color:#fbbf24">━</span> блокировка по нашему приоритету &nbsp; <span style="color:#64748b">━</span> случайные узлы</div>
-    <div class="muted small" style="margin-top:6px">Разрыв между линиями — доказательство, что приоритет выделяет несущие узлы сети, хотя разметки ролей в данных нет.</div>`;
+  for (let v = 0; v <= 100; v += 25) grid += `<line x1="${P}" x2="${W - 10}" y1="${Y(v)}" y2="${Y(v)}" stroke="#e3ebe5"/><text x="4" y="${Y(v) + 4}" fill="#83968a" font-size="10">${v}%</text>`;
+  xs.forEach((v) => (grid += `<text x="${X(v) - 5}" y="${H}" fill="#83968a" font-size="10">${v}</text>`));
+  $("#stress-chart").innerHTML = `<svg viewBox="0 0 ${W} ${H + 4}">${grid}<line x1="${X(n)}" x2="${X(n)}" y1="10" y2="${H - P + 6}" stroke="#427e59" stroke-dasharray="3 3"/>${line("random", "#83968a")}${line("priority", "#427e59")}</svg>
+    <div class="small"><span style="color:#427e59">━</span> блокировка по нашему приоритету &nbsp; <span style="color:#83968a">━</span> случайные узлы</div>
+    <div class="muted small" style="margin-top:6px">Сравнение показывает структурный эффект выбранного приоритета. Оно не подтверждает роли или виновность клиентов.</div>`;
 }
 
 /* ---------------- методика */
@@ -343,77 +415,99 @@ async function renderDataRequests() {
   }
 }
 
-/* ---------------- вкладки, поиск, старт */
-function switchTab(t) {
-  const leavingStress = $("#tabs button.active")?.dataset.tab === "stress" && t !== "stress";
-  $$("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
-  if (leavingStress && S.removed.size) {  // блокировка — только сценарий стресс-теста, в других видах не показываем
-    S.removed = new Set();
-    if (S.mode === "top") loadGraph();
-  }
-  $$(".tab").forEach((el) => el.classList.toggle("hidden", el.id !== "tab-" + t));
-  if (t === "stress") runStress();
-}
-$$("#tabs button").forEach((b) => (b.onclick = () => switchTab(b.dataset.tab)));
-$$("#modes button").forEach((b) => (b.onclick = () => {
-  if (b.dataset.mode !== "top" && !S.sel) return alert("Сначала выберите узел в списке или на графе");
-  if (b.dataset.mode === "top") S.removed.size && (S.removed = S.removed);
-  setMode(b.dataset.mode);
-}));
-$$("#radius button").forEach((b) => (b.onclick = () => {
-  S.radius = +b.dataset.r; $$("#radius button").forEach((x) => x.classList.toggle("active", x === b));
-  if (S.mode === "ego") loadGraph();
-}));
-$("#btn-fit").onclick = () => S.net.fit({ animation: { duration: 400 } });
-$("#stress-n").oninput = () => { $("#stress-n-val").textContent = $("#stress-n").value; clearTimeout(stressT); stressT = setTimeout(runStress, 250); };
-$("#ask-form").onsubmit = (e) => { e.preventDefault(); const v = $("#ask-input").value; $("#ask-input").value = ""; ask(v); };
-$("#ask-input").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#ask-form").requestSubmit(); } };
 
-let searchT = null;
+/* Navigation, keyboard access and startup. All gid values stay strings. */
+const views = {
+ node: ["Вся сеть. Ясная картина.", "Находите ключевых участников и прослеживайте движение денег."],
+ ai: ["Вопросы к данным. Ответы по делу.", "Исследуйте связи вместе с AI-аналитиком."],
+ clusters: ["Сообщества внутри сети.", "От отдельных переводов — к структуре взаимодействий."],
+ stress: ["Проверка на устойчивость.", "Оцените, какие участники сильнее всего влияют на связность сети."],
+ method: ["Каждый вывод объясним.", "Правила анализа, ограничения и рекомендации по запросу данных."]
+};
+function switchTab(t) {
+  if (!views[t]) return;
+  const leavingStress = S.view === "stress" && t !== "stress";
+  S.view = t; document.body.dataset.view = t;
+  $("#page-title").textContent = views[t][0]; $("#page-description").textContent = views[t][1];
+  $$("#tabs button").forEach(b => { b.classList.toggle("active", b.dataset.tab === t); if (b.dataset.tab === t) b.setAttribute("aria-current","page"); else b.removeAttribute("aria-current"); });
+  $$("[data-nav]").forEach(b => b.classList.toggle("active", b.dataset.nav === t));
+  $$(".tab").forEach(el => el.classList.toggle("hidden", el.id !== "tab-" + t));
+  if (leavingStress) { clearTimeout(stressT); S.removed = new Set(); handle(loadGraph()); }
+  if (t === "stress") handle(runStress());
+  requestAnimationFrame(() => S.net?.redraw());
+}
+$$("#tabs button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+$$("[data-nav]").forEach(b => b.onclick = () => switchTab(b.dataset.nav));
+$$("#modes button").forEach(b => b.onclick = () => handle(setMode(b.dataset.mode)));
+$$("#radius button").forEach(b => b.onclick = () => { S.radius = +b.dataset.r; $$("#radius button").forEach(x => x.classList.toggle("active",x === b)); if (S.mode === "ego") handle(loadGraph()); });
+$("#btn-fit").onclick = () => S.net?.fit({padding:40,animation:{duration:350}});
+$("#btn-zoom-in").onclick = () => { if(S.net) S.net.moveTo({scale:Math.min(S.net.getScale()*1.25,4),animation:{duration:180}}); };
+$("#btn-zoom-out").onclick = () => { if(S.net) S.net.moveTo({scale:Math.max(S.net.getScale()/1.25,.08),animation:{duration:180}}); };
+$("#btn-close-detail").onclick = () => { document.body.classList.remove("detail-open"); document.body.classList.add("detail-collapsed"); requestAnimationFrame(() => S.net?.redraw()); };
+$("#stress-n").oninput = () => { $("#stress-n-val").textContent = $("#stress-n").value; clearTimeout(stressT); stressT = setTimeout(runStress,250); };
+$("#ask-form").onsubmit = e => { e.preventDefault(); if(S.asking) return; const q=$("#ask-input").value; $("#ask-input").value=""; handle(ask(q)); };
+$("#ask-input").onkeydown = e => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("#ask-form").requestSubmit();} };
+
+let searchT, searchRequest = 0;
 $("#search").oninput = () => {
   clearTimeout(searchT);
-  const q = $("#search").value.trim(), box = $("#search-res");
-  if (q.length < 2) return box.classList.remove("show");
-  searchT = setTimeout(async () => {
-    const res = await api(`/api/search?q=${encodeURIComponent(q)}`);
-    box.innerHTML = res.length ? res.map((n) => `<div class="item" data-gid="${n.id}"><span></span><div><div class="gid">${n.id}</div>${roleBadge(n.role)}</div><span class="p">${n.priority.toFixed(2)}</span></div>`).join("") : '<div class="muted small" style="padding:10px">не найдено</div>';
+  const q=$("#search").value.trim(), box=$("#search-res"), request=++searchRequest;
+  if(q.length<2){box.classList.remove("show");return;}
+  searchT=setTimeout(async()=>{try{
+    const rows=await api(`/api/search?q=${encodeURIComponent(q)}`);
+    if(request!==searchRequest) return;
+    box.innerHTML=rows.length ? rows.map(n=>`<button class="item" data-gid="${n.id}" title="${n.id}"><span class="rank">↗</span><span><span class="gid">${short(n.id)}</span><br>${roleBadge(n.role)}</span><span class="p">${n.priority.toFixed(2)}</span></button>`).join("") : '<div class="empty-state">Клиент не найден.<br>Проверьте gid.</div>';
     box.classList.add("show");
-  }, 200);
+  }catch(e){if(request===searchRequest){box.innerHTML='<div class="empty-state">Поиск временно недоступен</div>';box.classList.add("show");}}},200);
 };
-document.addEventListener("click", (e) => { if (!e.target.closest(".search")) $("#search-res").classList.remove("show"); });
-
+$("#search").onkeydown = e => {
+ if(e.key==="Enter"){e.preventDefault(); const first=$("#search-res [data-gid]"); if(first) first.click(); else if(/^\d{15,20}$/.test(e.target.value.trim())) handle(selectNode(e.target.value.trim(),true));}
+ if(e.key==="Escape") $("#search-res").classList.remove("show");
+};
+document.addEventListener("click",e=>{
+ if(!e.target.closest(".search")) $("#search-res").classList.remove("show");
+ $$(".header-actions details[open]").forEach(el=>{if(!el.contains(e.target))el.open=false;});
+});
+document.addEventListener("keydown",e=>{
+ if(e.key==="/"&&!e.target.closest("input,textarea")){e.preventDefault();switchTab("node");$("#search").focus();}
+ if(e.key==="Escape"){document.body.classList.remove("detail-open");$$(".header-actions details[open]").forEach(el=>el.open=false);}
+});
 async function health() {
-  try {
-    const h = await api("/api/health");
-    $("#pill-mcp").className = "pill " + (h.mcp ? "on" : "off");
-    $("#pill-mcp").title = h.mcp ? `MCP-сервер онлайн: ${h.mcp_tools.join(", ")}` : "MCP-сервер не отвечает — агент вызывает инструменты напрямую";
-    $("#pill-mcp").lastChild.textContent = h.mcp ? `MCP · ${h.mcp_tools.length} tools` : "MCP offline";
-    $("#pill-llm").className = "pill " + (h.llm ? "on" : "off");
-    $("#pill-llm").lastChild.textContent = h.llm ? "LLM" : "LLM: режим правил";
-  } catch { }
+ try {
+  const h=await api("/api/health");
+  $("#pill-mcp").className="pill "+(h.mcp?"on":"off");
+  $("#pill-mcp").lastChild.textContent=h.mcp?`Инструменты онлайн · ${h.mcp_tools.length}`:"Инструменты: локальный режим";
+  $("#pill-mcp").title=h.mcp?h.mcp_tools.join(", "):"MCP недоступен, используются прямые вызовы";
+  $("#pill-llm").className="pill "+(h.llm?"on":"off");
+  $("#pill-llm").lastChild.textContent=h.llm?"AI подключён":"AI: режим правил";
+  $(".status-dot").style.background=h.mcp?"#4a9772":"#c69c5e";
+ }catch{$("#pill-mcp").lastChild.textContent="Статус временно недоступен";}
 }
-
 async function start() {
-  initGraph();
-  S.summary = await api("/api/summary");
-  const s = S.summary, R = s.roles;
-  const kpi = (v, t, dot) => `<div class="kpi"><b>${v}</b><span>${dot ? `<i class="dot" style="background:${dot}"></i>` : ""}${t}</span></div>`;
-  $("#kpis").innerHTML = kpi(fmtN(s.nodes), `узлов · ${s.seeds} seed`) + kpi((s.turnover / 1e6).toFixed(0) + " млн ₸", "оборот") +
-    ["coordinator", "consolidator", "distributor", "transit", "terminal"].map((r) => kpi(R[r] || 0, s.role_ru[r], s.colors[r])).join("") + kpi(s.clusters, "кластеров");
-  $("#legend").innerHTML = Object.keys(s.colors).map((r) => `<span><i style="background:${s.colors[r]}"></i>${s.role_ru[r]}</span>`).join("") + "<span>★ seed</span>";
-  const top = await api("/api/top?n=30");
-  $("#top-count").textContent = `· ${top.length}`;
-  $("#toplist").innerHTML = top.map((n) => `
-    <div class="item" data-id="${n.id}" onclick="selectNode('${n.id}', false)">
-      <span class="rank">${n.rank}</span>
-      <div><div class="gid">${n.id}</div><div style="margin-top:3px">${roleBadge(n.role)}</div><div class="bar"><div style="width:${n.priority * 100}%"></div></div></div>
-      <span class="p">${n.priority.toFixed(2)}</span>
-    </div>`).join("");
-  const ex = await api("/api/examples");
-  $("#examples").innerHTML = ex.map((q) => `<span class="chip" title="${esc(q)}">${esc(q)}</span>`).join("");
-  $$(".chip").forEach((c) => (c.onclick = () => ask(c.title)));
-  renderMethod(); renderClusters(); health(); setInterval(health, 30000);
-  await loadGraph();
-  selectNode(top[0].id, false);
+ $$("[data-icon]").forEach(el=>el.innerHTML=icon(el.dataset.icon));
+ initGraph();
+ S.summary=await api("/api/summary");
+ S.summary.colors=COLORS;
+ const s=S.summary;
+ const kpi=(name,value,label,note)=>`<div class="kpi"><span class="kpi-icon">${icon(name)}</span><div><div class="kpi-label">${label}</div><b>${value}</b><small>${note}</small></div></div>`;
+ $("#kpis").innerHTML=kpi("users",fmtN(s.nodes),"Участников сети",`${s.seeds} исходный клиент · seed`)+
+  kpi("money",`${(s.turnover/1e6).toFixed(0)} <span class="unit">млн ₸</span>`,"Общий оборот",`${fmtN(s.edges)} связей между клиентами`)+
+  kpi("shield",s.roles.coordinator||0,"Кандидатов в координаторы","Гипотезы для углублённой проверки")+
+  kpi("grid",s.clusters,"Кластеров сети","Группы связанных участников");
+ $("#legend").innerHTML=Object.keys(COLORS).map(r=>`<span><i style="background:${COLORS[r]}"></i>${s.role_ru[r]}</span>`).join("")+'<span title="Клиенты исходного списка">★ seed</span>';
+ const top=await api("/api/top?n=30");
+ $("#top-count").textContent=top.length;
+ $("#toplist").innerHTML=top.map(n=>`<button class="item" data-gid="${n.id}" title="Клиент ${n.id}"><span class="rank">${String(n.rank).padStart(2,"0")}</span><span><span class="gid">${short(n.id)}</span><br>${roleBadge(n.role)}<span class="bar" style="display:block"><span style="display:block;height:100%;width:${n.priority*100}%;background:#94b99f"></span></span></span><span class="p">${n.priority.toFixed(2)}</span></button>`).join("");
+ // Selecting the list opens a card, retaining the current overview.
+ $("#toplist").addEventListener("click",e=>{const el=e.target.closest("[data-gid]");if(el){e.stopPropagation();handle(selectNode(el.dataset.gid,false));}});
+ renderMethod(); handle(renderClusters()); handle(health()); setInterval(health,30000);
+ try{
+  const examples=await api("/api/examples");
+  const labels=["Общие получатели","Кого проверить первым?","Объяснить роль","Блокировка топ-20","Границы данных"];
+  $("#examples").innerHTML=examples.map((q,i)=>`<button class="chip" title="${esc(q)}">${labels[i]||"Пример вопроса"}</button>`).join("");
+  $$(".chip").forEach((b,i)=>b.onclick=()=>{if(!S.asking)handle(ask(examples[i]));});
+ }catch{$("#examples").textContent="Введите вопрос ниже.";}
+ await loadGraph();
+ if(top.length) await selectNode(top[0].id,false,false);
 }
-start();
+start().catch(e=>{loader(false);$("#graph-info").textContent="Не удалось загрузить данные. Проверьте запуск сервера.";toast("Ошибка загрузки: "+e.message);});
