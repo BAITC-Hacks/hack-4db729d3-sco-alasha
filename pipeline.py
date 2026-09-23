@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
+import sys
 import time
 from pathlib import Path
 
@@ -20,6 +21,13 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+
+# Windows-консоль в cp1251 не печатает часть символов — не даём пайплайну упасть из-за кодировки
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
 
 SEED = 42
 ROLES = ["consolidator", "transit", "distributor", "terminal", "coordinator", "peripheral"]
@@ -189,13 +197,27 @@ def forward_probability(df: pd.DataFrame) -> pd.DataFrame:
     p_te = hold.predict_proba(Xte)[:, 1]
     auc = float(roc_auc_score(yte, p_te))
     base_auc = float(roc_auc_score(yte, Xte["in_deg"]))   # однофакторный бейзлайн: число плательщиков
+    # проверка на "искусственной границе": обучение на коленах 1-2, прогноз для колена 3 только по входящим
+    # признакам и сравнение с наблюдаемыми исходящими 3-го колена — имитирует перенос на обрезанное 4-е колено
+    tr12 = train & df.depth.between(1, 2)
+    te3 = train & (df.depth == 3)
+    Xb = (X - X[tr12].mean()) / X[tr12].std().replace(0, 1)
+    yb12, yb3 = (df.loc[tr12, "out_deg"] > 0).astype(int), (df.loc[te3, "out_deg"] > 0).astype(int)
+    bclf = LogisticRegression(max_iter=1000, random_state=SEED).fit(Xb[tr12], yb12)
+    boundary_auc = float(roc_auc_score(yb3, bclf.predict_proba(Xb[te3])[:, 1]))
+    boundary_base = float(roc_auc_score(yb3, X.loc[te3, "in_deg"]))
     clf = LogisticRegression(max_iter=1000, random_state=SEED).fit(Xs, y)
     df["p_forward"] = clf.predict_proba((X - mu) / sd)[:, 1]
     df.loc[df.out_observed, "p_forward"] = (df.loc[df.out_observed, "out_deg"] > 0).astype(float)
     model_info = {"features": feats, "coef": dict(zip(feats, clf.coef_[0].round(3).tolist())),
                   "train_size": int(train.sum()), "train_forward_rate": float(y.mean()),
                   "holdout_auc": round(auc, 3), "baseline_auc_in_deg_only": round(base_auc, 3),
-                  "holdout_size": int(len(yte))}
+                  "holdout_size": int(len(yte)),
+                  "boundary_test_train_depth_1_2_test_depth_3_auc": round(boundary_auc, 3),
+                  "boundary_test_baseline_auc": round(boundary_base, 3),
+                  "boundary_test_size": int(te3.sum()), "boundary_test_forward_rate": round(float(yb3.mean()), 3),
+                  "scaler_mean": mu.round(4).to_dict(), "scaler_std": sd.round(4).to_dict(),
+                  "intercept": round(float(clf.intercept_[0]), 4)}
     return df, model_info
 
 
@@ -219,7 +241,11 @@ def assign_roles(G: nx.DiGraph, df: pd.DataFrame, T: dict) -> pd.DataFrame:
                                    f"веерная рассылка: {int(r.out_deg)} получателям, {int(r.out_tx)} переводов на {fmt_kzt(r.out_kzt)} ₸{seed_note}")
 
         if r.in_deg >= T["consolidator_min_payers"]:
-            kept = 1 - min(pt, 1) if not np.isnan(pt) else (1 - r.p_forward)
+            # удержание считаем только там, где исходящие реально выгружены; для 4-го колена — оценка модели
+            if r.out_observed and not np.isnan(pt) and not r.is_seed:
+                kept = 1 - min(pt, 1)
+            else:
+                kept = 1 - r.p_forward
             s = 0.45 + 0.35 * min(r.in_deg / 12, 1) + 0.2 * kept
             if r.is_seed:
                 s *= 0.8
@@ -240,8 +266,8 @@ def assign_roles(G: nx.DiGraph, df: pd.DataFrame, T: dict) -> pd.DataFrame:
         if r.in_deg >= 1 and r.out_deg == 0 and big_enough:
             if r.out_observed:
                 s = 0.6 + 0.2 * min(r.in_deg / 4, 1) + 0.2 * min(np.log1p(r.in_kzt) / np.log1p(1e6), 1)
-                cand["terminal"] = (clip01(s), f"деньги осели: получил {fmt_kzt(r.in_kzt)} ₸ от {int(r.in_deg)} плательщ., "
-                                               f"исходящих ≥5 тыс ₸ нет (колено {int(r.depth)}, исходящие собраны)")
+                cand["terminal"] = (clip01(s), f"получил {fmt_kzt(r.in_kzt)} ₸ от {int(r.in_deg)} плательщ.; исходящих ≥5 тыс ₸ в выборке "
+                                               f"не наблюдается (колено {int(r.depth)}, исходящие выгружены)")
                 sub[g] = "observed_sink"
             elif r.p_forward < T["terminal_fwd_prob_max"]:
                 s = 0.35 + 0.4 * (1 - r.p_forward)
@@ -269,7 +295,7 @@ def assign_roles(G: nx.DiGraph, df: pd.DataFrame, T: dict) -> pd.DataFrame:
             elif sub.get(g) == "small_receiver" and r.out_observed:
                 scores[g] = 0.85
                 evid[g] = (f"мелкий получатель: разовое поступление {fmt_kzt(r.in_kzt)} ₸ от 1 плательщика, "
-                           f"дальше не ушло — признаков роли нет")
+                           f"исходящих в выборке не наблюдается — признаков роли нет")
             elif r.in_deg == 0 and r.out_deg == 0:
                 scores[g] = 0.9
                 evid[g] = "seed без переводов ≥5 тыс ₸ внутри банка за июль — связей в выгрузке нет"
@@ -374,7 +400,7 @@ def rank01(s: pd.Series) -> pd.Series:
 
 def priority(df: pd.DataFrame) -> pd.DataFrame:
     """Приоритет проверки = взвешенная сумма интерпретируемых компонент (все в 0..1):
-       0.30 вес роли × уверенность, 0.25 близость к seed (near_seeds), 0.20 входящий оборот, 0.15 PageRank, 0.10 betweenness.
+       0.30 вес роли × уверенность, 0.25 близость к seed (near_seeds), 0.20 оборот (вход + выход), 0.15 PageRank, 0.10 betweenness.
        Известные seed умножаются на 0.6: они уже в деле, фокус — на тех, кто выше по цепочке."""
     comp = pd.DataFrame(index=df.index)
     comp["role"] = df.role.map(ROLE_WEIGHT) * df.role_score
@@ -426,6 +452,25 @@ def resilience(G: nx.DiGraph, df: pd.DataFrame, ns=(5, 10, 20)) -> dict:
     return out
 
 
+# ---------------------------------------------------------------- самопроверка контрактов ТЗ
+def validate(nr: pd.DataFrame, ct: pd.DataFrame, tn: pd.DataFrame, nodes: pd.DataFrame):
+    checks = {
+        "каждый gid ровно один раз": nr.gid.is_unique and set(nr.gid) == set(nodes.gid),
+        "роли из словаря": nr.role.isin(ROLES).all(),
+        "обязательные поля заполнены": nr[["role", "role_score", "cluster_id", "priority_score", "evidence"]].notna().all().all()
+                                       and (nr.evidence.str.len() > 0).all(),
+        "evidence <= 200 символов": (nr.evidence.str.len() <= 200).all(),
+        "скоры в [0,1]": nr.role_score.between(0, 1).all() and nr.priority_score.between(0, 1).all(),
+        "cluster_id согласованы": set(nr.cluster_id) == set(ct.cluster_id),
+        "top_nodes >= 20 уникальных": len(tn) >= 20 and tn.gid.is_unique,
+        "top_nodes по убыванию": tn.priority_score.is_monotonic_decreasing,
+    }
+    bad = [k for k, ok in checks.items() if not ok]
+    print("      самопроверка: " + ("OK, все " + str(len(checks)) + " проверок пройдены" if not bad else "ОШИБКИ: " + "; ".join(bad)))
+    if bad:
+        raise SystemExit(1)
+
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
@@ -448,7 +493,8 @@ def main():
     df, model_info = forward_probability(df)
     print(f"[3/7] модель P(пересылает дальше) для 4-го колена: обучена на {model_info['train_size']} узлах, "
           f"AUC на отложенной выборке {model_info['holdout_auc']} (бейзлайн по числу плательщиков "
-          f"{model_info['baseline_auc_in_deg_only']})")
+          f"{model_info['baseline_auc_in_deg_only']}); граница 1-2 -> 3: AUC "
+          f"{model_info['boundary_test_train_depth_1_2_test_depth_3_auc']}")
 
     df = assign_roles(G, df, THRESHOLDS)
     print(f"[4/7] роли: {df.role.value_counts().to_dict()}")
@@ -475,11 +521,15 @@ def main():
 
     # --- top_nodes.csv
     top = df[df.role != "peripheral"].sort_values("priority_score", ascending=False).head(30)
+    if len(top) < 20:  # гарантия контракта ТЗ (>= 20 строк) на любом наборе данных
+        top = df.sort_values("priority_score", ascending=False).head(20)
     tn = pd.DataFrame({"rank": range(1, len(top) + 1), "gid": top.index.astype("int64"), "role": top.role.values,
                        "priority_score": top.priority_score.values,
                        "why": [why_text(g, r) for g, r in top.iterrows()]})
     tn.to_csv(out / "top_nodes.csv", index=False)
     print(f"[6/7] выгрузки: nodes_roles={len(nr)}, clusters={len(ct)}, top_nodes={len(tn)}")
+
+    validate(nr, ct, tn, nodes)
 
     # --- артефакты для UI / MCP
     res = resilience(G, df)
@@ -489,7 +539,7 @@ def main():
     meta = {"thresholds": THRESHOLDS, "role_weight": ROLE_WEIGHT, "forward_model": model_info,
             "resilience": res, "runtime_sec": round(time.time() - t0, 1)}
     (out / "run_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2, default=float), encoding="utf-8")
-    print(f"[7/7] готово за {time.time() - t0:.1f}s → {out}/")
+    print(f"[7/7] готово за {time.time() - t0:.1f}s, выгрузки в {out}/")
 
 
 if __name__ == "__main__":
