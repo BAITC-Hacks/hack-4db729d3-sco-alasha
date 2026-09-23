@@ -4,19 +4,20 @@ flowchart TB
     subgraph CORE["⚙️ ЯДРО — pipeline.py · детерминированно, без LLM, ~20 с"]
         direction LR
         M["Метрики<br/>степени · суммы · pass-through<br/>PageRank · HITS · betweenness<br/>near_seeds · быстрый транзит · циклы"]
+        EX["Дополнительные сигналы<br/>дробление · IsolationForest<br/>z-нормировка внутри колена"]
         ML["ML-модель 4-го колена<br/>P(пересылает дальше)<br/>AUC 0.71"]
         R["Правила ролей<br/>role_score + evidence"]
         C["Louvain-кластеры<br/>+ гипотезы"]
         PR["Приоритет<br/>проверки"]
-        M --> ML --> R --> C --> PR
+        M --> EX --> ML --> R --> C --> PR
     end
 
-    O[("📄 nodes_roles.csv · clusters.csv · top_nodes.csv<br/>✔ самопроверка 8 контрактов ТЗ")]
+    O[("📄 nodes_roles.csv · clusters.csv · top_nodes.csv<br/>+ data_requests.csv<br/>✔ самопроверка 8 контрактов ТЗ")]
 
     subgraph AI["🤖 AI-СЛОЙ"]
         direction LR
-        T["graph_tools.py<br/>8 инструментов графа"]
-        MCP["MCP-сервер graph-intel<br/>:8010/mcp<br/>8 tools · 2 resources · 1 prompt"]
+        T["graph_tools.py<br/>9 инструментов графа · data_gaps"]
+        MCP["MCP-сервер graph-intel<br/>:8010/mcp<br/>9 tools · 2 resources · 1 prompt"]
         AG["AI-агент<br/>LLM + tool calling<br/>fallback: правила"]
         T --> MCP
         AG -- "MCP-клиент<br/>tools/list · tools/call" --> MCP
@@ -44,7 +45,7 @@ flowchart TB
     classDef app fill:#052e16,stroke:#22c55e,color:#dcfce7
     classDef ext fill:#111827,stroke:#64748b,color:#cbd5e1,stroke-dasharray:4 3
     class P,O data
-    class M,ML,R,C,PR core
+    class M,EX,ML,R,C,PR core
     class T,MCP,AG ai
     class API,UI app
     class EXT ext

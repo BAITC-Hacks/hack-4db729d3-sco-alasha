@@ -208,6 +208,12 @@ def _curve():
     return pts
 
 
+@app.get("/api/data_requests", tags=["оценка полноты"])
+def data_requests(n: int = Query(15, ge=0)):
+    rows = T.data_gaps(n)
+    return J([{**r, "gid": str(r["gid"])} for r in rows])
+
+
 @app.get("/api/simulate", tags=["стресс-тест"])
 def simulate(top_n: int = 10):
     r = T.simulate_removal(top_n=max(0, min(top_n, 100)))
@@ -253,7 +259,7 @@ async def health():
 
 @app.get("/api/download/{name}", tags=["служебное"])
 def download(name: str):
-    if name not in {"nodes_roles.csv", "clusters.csv", "top_nodes.csv", "run_meta.json"}:
+    if name not in {"nodes_roles.csv", "clusters.csv", "top_nodes.csv", "run_meta.json", "data_requests.csv"}:
         raise HTTPException(404)
     return FileResponse(OUT / name, filename=name)
 

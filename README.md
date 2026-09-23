@@ -10,6 +10,24 @@ AML-аналитик знает 81 «курьера» (seed). Инструмен
 > Все выводы — **гипотезы для углублённой проверки** («признаки консолидации»), а не утверждение о виновности.
 > Персональные данные не используются, только структура переводов и суммы.
 
+## Требование ТЗ → где реализовано → как проверить
+
+| Требование ТЗ | Где реализовано | Как проверить |
+|---|---|---|
+| Must-have 1. Воспроизводимый пайплайн, ≤ 5 минут | `pipeline.py`, `validate()` | `python pipeline.py` → три обязательные CSV и `самопроверка: OK` |
+| Must-have 2. Роль, скор и evidence у каждого узла | `assign_roles()`, `out/nodes_roles.csv` | `pytest -q tests` → 2 248 уникальных gid, заполненные поля и скоры в [0,1] |
+| Must-have 3. Формальные объяснимые критерии ролей | `THRESHOLDS`, раздел «Критерии ролей», `explain.py` | `python explain.py <gid1> <gid2> <gid3>` → роль, метрики и обоснование |
+| Must-have 4. Кластеры и гипотезы | `clusters()`, `cluster_table()`, `out/clusters.csv` | Открыть CSV: размер, seed, оборот, ключевые узлы, гипотеза; проверить `cluster_id` тестами |
+| Must-have 5. Топ ≥ 20 и визуализация | `priority()`, `out/top_nodes.csv`, `server.py`, `web/` | `python run.py` → топ-30, поиск gid, стрелки потоков, роли и кластеры |
+| Опционально: учёт обрыва графа | `forward_probability()`, `sub_role`, модель 4-го колена | «Методика» → AUC и проверка на искусственной границе; карточка узла `depth=4` |
+| Опционально: временные паттерны | `temporal_features()` | Карточка → быстрый транзит, плательщики за день и график переводов |
+| Опционально: циклы возврата | `cycle_features()`, колонка `cycles` | Найти узел с `cycles>0`, открыть карточку или `explain.py` |
+| Опционально: аномалии и дробление | `anomaly_features()`, дополнительные колонки `nodes_roles.csv` | `pytest -q tests/test_extras.py`; карточки узлов с `anomaly_flag` / `structuring_flag` |
+| Опционально: устойчивость сети | `resilience()`, `simulate_removal()` | Вкладка «Стресс-тест» → блокировка топ-N и случайный бейзлайн |
+| Опционально: AI-ассистент | `agent.py`, `mcp_server.py` | Вкладка «AI-аналитик» → вопрос об общих получателях; видны вызовы инструментов и gid |
+| Опционально: карточка узла | `graph_tools.node_card()`, `explain.py` | `python explain.py` → справки по топ-3 без UI, ключей и аккаунтов |
+| Опционально: оценка полноты | `data_requests()`, `out/data_requests.csv`, MCP `data_gaps` | «Методика» → топ-12 запросов; `/api/data_requests?n=12`; в карточке — рекомендации для gid |
+
 ---
 
 ## ⚡ Запуск
@@ -22,7 +40,7 @@ python run.py
 ```
 
 `run.py` — **одна команда** для всего решения:
-1. пайплайн `pipeline.py`: raw .parquet → 3 CSV + граф (~20–30 с, 8 автопроверок контрактов ТЗ);
+1. пайплайн `pipeline.py`: raw .parquet → 3 обязательные CSV + `data_requests.csv` + граф (~20–30 с, 8 автопроверок контрактов ТЗ);
 2. **MCP-сервер** `graph-intel` (Streamable HTTP, `http://127.0.0.1:8010/mcp`), отдельный процесс;
 3. **backend FastAPI + веб-интерфейс**: **http://localhost:8000** (браузер откроется сам), Swagger API: http://localhost:8000/docs.
 
@@ -36,7 +54,8 @@ Windows: `run.bat`, Linux/macOS: `bash run.sh`. Запасной интерфе�
 | `nodes_roles.csv` | 2 248 строк: `gid, role, role_score, cluster_id, priority_score, evidence` + все метрики, на которых основана роль |
 | `clusters.csv` | 66 кластеров: `cluster_id, n_nodes, n_seed, sum_kzt_internal, top_gids, hypothesis` |
 | `top_nodes.csv` | топ-30: `rank, gid, role, priority_score, why` |
-| `run_meta.json` | пороги, веса, коэффициенты модели, результаты стресс-теста |
+| `data_requests.csv` | `rank, gid, request, reason, priority_score`: какие данные запросить следующими; несколько строк на gid допустимы |
+| `run_meta.json` | пороги, веса, коэффициенты модели, результаты стресс-теста; `extras` — количества аномалий, признаков дробления, запросов и затронутых узлов |
 | `graph.pkl` | граф и метрики для UI / MCP (не коммитится) |
 
 Выгрузки также лежат в репозитории (папка `out/`), их можно проверить без запуска.
@@ -59,9 +78,9 @@ Windows: `run.bat`, Linux/macOS: `bash run.sh`. Запасной интерфе�
 ```mermaid
 flowchart LR
     A[edges / nodes / transactions .parquet] --> B[pipeline.py<br/>метрики, ML для 4-го колена,<br/>правила ролей, Louvain, приоритет]
-    B --> C[(out/: 3 CSV + graph.pkl<br/>+ run_meta.json)]
-    C --> T[graph_tools.py<br/>8 инструментов графа]
-    T --> M[MCP-сервер graph-intel<br/>:8010/mcp · 8 tools, 2 resources, 1 prompt]
+    B --> C[(out/: 3 обязательные CSV + data_requests.csv<br/>+ graph.pkl + run_meta.json)]
+    C --> T[graph_tools.py<br/>9 инструментов графа]
+    T --> M[MCP-сервер graph-intel<br/>:8010/mcp · 9 tools, 2 resources, 1 prompt]
     W[Web UI<br/>граф, путь денег, стресс-тест, чат] <--> S[FastAPI backend :8000<br/>REST API + /docs]
     S --> T
     S --> AG[AI-агент<br/>LLM + tool calling]
@@ -78,12 +97,13 @@ LLM сама решает, что вызвать, вызовы идут чере
 | Файл | Роль |
 |---|---|
 | `pipeline.py` | детерминированный пайплайн: метрики → роли → кластеры → приоритет → CSV + самопроверка |
-| `graph_tools.py` | инструменты графа: node_info, node_card, neighbors, trace_money, common_receivers, top_nodes, cluster_info, simulate_removal |
+| `graph_tools.py` | инструменты графа: node_info, node_card, neighbors, trace_money, common_receivers, top_nodes, cluster_info, simulate_removal, data_gaps |
 | `mcp_server.py` | MCP-сервер graph-intel (FastMCP): те же инструменты по протоколу MCP (stdio / Streamable HTTP) |
 | `agent.py` | AI-агент: MCP-клиент + LLM function calling; fallback на правилах |
 | `server.py` | backend FastAPI: `/api/summary, /api/top, /api/search, /api/node/{gid}, /api/graph, /api/flow/{gid}, /api/clusters, /api/simulate, /api/ask, /api/health, /api/download` |
 | `web/` | фронтенд (HTML/CSS/JS, vis-network лежит локально в `web/vendor`, без CDN) |
 | `run.py` | запуск всего одной командой |
+| `explain.py` | справка и пять крупнейших контрагентов по каждому gid из командной строки |
 | `app.py` | запасной интерфейс на Streamlit |
 | `starter/` | стартовый код организаторов (не изменялся) |
 
@@ -123,6 +143,52 @@ LLM сама решает, что вызвать, вызовы идут чере
 транзакции по датам, флаги. В `nodes_roles.csv` рядом с ролью лежат все метрики правила: `in_deg, out_deg, in_kzt, out_kzt,
 pass_through, near_seeds, fast_transit_share, p_forward, …`.
 
+Без интерфейса и LLM:
+
+```bash
+python explain.py                         # пример на топ-3 по приоритету
+python explain.py <gid> [<gid>...]         # один или несколько клиентов
+```
+
+Команда печатает `node_card`: роль, обоснование, потоки, флаги и рекомендуемые запросы данных.
+Затем выводит пять крупнейших уникальных контрагентов по суммарному входящему и исходящему обороту,
+с раздельными суммами направлений. Если gid неизвестен, сообщает об этом и возвращает ненулевой код выхода.
+
+### Дополнительные сигналы: дробление и аномалии
+
+`small_tx_share` — доля входящих транзакций с `5 000 ≤ sum_kzt < 10 000`.
+`structuring_flag` срабатывает при `in_tx ≥ 5` и доле ≥ 0.7; пороги задают
+`structuring_min_tx` и `structuring_share` в `THRESHOLDS`.
+
+Для аномалий используются `log1p(in_kzt)`, `log1p(out_kzt)`, `in_deg`, `out_deg`,
+`log1p(avg_tx_in)`, `fast_transit_share`, `max_payers_same_day`, `log1p(cycles)`.
+Z-нормировка выполняется **внутри каждого depth**, по всем узлам колена; постоянные признаки получают 0.
+`IsolationForest(n_estimators=300, random_state=42)` обучается на активных узлах (`in_deg + out_deg > 0`).
+`anomaly_score` — перцентиль аномальности среди активных узлов (чем выше, тем необычнее профиль);
+`anomaly_flag` отмечает верхние 3% с округлением количества вверх, при равных скорах — по gid.
+Изолированные узлы получают скор 0 и не отмечаются. `anomaly_reason` описывает признак с наибольшим |z|;
+это объяснение отклонения от своего колена, а не оценка вклада признака в IsolationForest или вероятность нарушения.
+
+Пять новых колонок дополняют `nodes_roles.csv`. Флаги видны в карточках и дополняют `why` топ-листа.
+Они не участвуют в присвоении ролей, кластеризации или расчёте приоритета.
+
+### Оценка полноты и `data_requests.csv`
+
+Пайплайн формирует по одной строке на рекомендуемый запрос, сортирует по убыванию существующего
+`priority_score` и присваивает последовательный `rank`. Для одного gid возможны несколько запросов:
+
+- `depth=4`, есть вход и (`P(пересылает) ≥ 0.35` или вход ≥ 500 тыс ₸): выписка исходящих за июль.
+- Seed с выходом ≥ 500 тыс ₸: входящие поступления из-за пределов выборки.
+- Признаки дробления: переводы ниже 5 000 ₸ и межбанковские за тот же период.
+- Не-seed consolidator/coordinator на коленах 0–3 с `pass_through < 0.3` или неизвестным отношением:
+  межбанковские переводы и снятие наличных.
+
+Обоснования содержат наблюдаемые суммы, доли или P. Неизвестная доля не подменяется нулём.
+Список доступен в «Методике» (топ-12, gid кликабельны), через `GET /api/data_requests?n=15`
+(gid передаются строками), скачивание `/api/download/data_requests.csv` и MCP-инструмент `data_gaps(n=15)`.
+`node_card` и `explain.py` показывают все рекомендации выбранного клиента. В режиме правил AI понимает
+вопрос «Какие данные запросить?». Новые проверки: `pytest -q tests/test_extras.py`.
+
 ---
 
 ## 🪤 Как учтены ловушки данных
@@ -135,7 +201,7 @@ pass_through, near_seeds, fast_transit_share, p_forward, …`.
    - она применяется к узлам 4-го колена: `P(пересылает) < 0.35` и заметная сумма → `terminal` (sub_role `likely_sink_truncated`),
      иначе `peripheral` с пометкой `truncated_unknown` / `truncated_small` и рекомендацией запросить выписку исходящих;
    - **качество проверено двумя способами:**
-     случайная отложенная выборка 25% — ROC-AUC **0.71** (бейзлайн «число плательщиков» 0.66);
+     случайная отложенная выборка 25% (стандартизация только по train) — ROC-AUC **0.71** (бейзлайн «число плательщиков» 0.66);
      **искусственная граница** (обучение на коленах 1–2, прогноз для колена 3 только по входящим признакам) —
      ROC-AUC **0.60** (бейзлайн 0.55). Модель лучше однофакторного правила, но перенос между коленами слабый,
      поэтому порог консервативный: в `terminal` попадают только узлы с `P < 0.35` и заметной суммой (79 из 444),
@@ -179,7 +245,7 @@ Louvain (networkx, `seed=42`, детерминирован) на неориен�
 1. `python pipeline.py --data data --out out`: в консоли 7 шагов, `nodes_roles=2248, clusters=66, top_nodes=30`
    и строка **самопроверки контрактов ТЗ** (8 проверок: каждый gid один раз, роли из словаря, поля заполнены,
    evidence ≤ 200 символов, скоры в [0,1], согласованность cluster_id, топ ≥ 20 и по убыванию). При ошибке — код выхода 1.
-2. `python run.py` → откроется http://localhost:8000. В шапке индикатор **MCP · 8 tools** (зелёный = агент работает через MCP).
+2. `python run.py` → откроется http://localhost:8000. В шапке индикатор **MCP · 9 tools** (зелёный = агент работает через MCP).
 3. Слева топ-лист приоритетов; клик по узлу открывает **карточку** справа. Поиск по любому gid (можно часть номера).
 4. **▶ Путь денег** на узле №1: анимация потоков от seed-клиентов к координатору.
 5. Вкладка **Стресс-тест**: ползунок «заблокировать топ-N».
@@ -194,7 +260,7 @@ python mcp_server.py            # stdio
 python mcp_server.py --http     # http://127.0.0.1:8010/mcp  (проверка: npx @modelcontextprotocol/inspector)
 ```
 
-Tools: `node_info, node_card, neighbors, trace_money, common_receivers, top_nodes, cluster_info, simulate_removal`;
+Tools: `node_info, node_card, neighbors, trace_money, common_receivers, top_nodes, cluster_info, simulate_removal, data_gaps`;
 resources: `graph://methodology`, `graph://node/{gid}`; prompt: `investigate`.
 Пример для Claude Desktop / Cursor:
 

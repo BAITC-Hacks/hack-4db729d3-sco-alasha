@@ -9,7 +9,12 @@
     "coordinator_min_role_payers": 2,
     "coordinator_min_in_kzt_pct": 0.75,
     "terminal_fwd_prob_max": 0.35,
-    "terminal_min_kzt": 100000
+    "terminal_min_kzt": 100000,
+    "structuring_min_tx": 5,
+    "structuring_share": 0.7,
+    "anomaly_top_share": 0.03,
+    "data_request_min_kzt": 500000,
+    "data_request_max_pass_through": 0.3
   },
   "role_weight": {
     "coordinator": 1.0,
@@ -38,7 +43,7 @@
     },
     "train_size": 1723,
     "train_forward_rate": 0.3737666860127684,
-    "holdout_auc": 0.708,
+    "holdout_auc": 0.709,
     "baseline_auc_in_deg_only": 0.655,
     "holdout_size": 431,
     "boundary_test_train_depth_1_2_test_depth_3_auc": 0.595,
@@ -89,5 +94,12 @@
       "seed_reach_pairs": 6553
     }
   },
-  "runtime_sec": 18.6
+  "extras": {
+    "anomaly_nodes": 67,
+    "structuring_nodes": 10,
+    "active_nodes": 2229,
+    "data_requests": 184,
+    "data_request_nodes": 182
+  },
+  "runtime_sec": 19.1
 }

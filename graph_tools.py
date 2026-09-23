@@ -35,6 +35,15 @@ def DF() -> pd.DataFrame:
     return state()["df"]
 
 
+def _data_requests() -> pd.DataFrame:
+    return pd.read_csv(OUT / "data_requests.csv", dtype={"gid": "int64"})
+
+
+def data_gaps(n: int = 15) -> list:
+    """Какие данные запросить следующими: топ запросов по приоритету узла (gid может повторяться)."""
+    return _data_requests().sort_values("rank").head(max(0, int(n))).to_dict("records")
+
+
 def _gid(x) -> int:
     return int(str(x).strip())
 
@@ -54,7 +63,8 @@ def node_info(gid) -> dict:
     r = DF().loc[g]
     keys = ["role", "role_score", "sub_role", "cluster_id", "priority_score", "evidence", "depth", "is_seed",
             "in_deg", "out_deg", "in_kzt", "out_kzt", "in_tx", "out_tx", "pass_through", "seed_payers",
-            "near_seeds", "seed_reach", "p_forward", "fast_transit_share", "max_payers_same_day", "cycles"]
+            "near_seeds", "seed_reach", "p_forward", "fast_transit_share", "max_payers_same_day", "cycles",
+            "anomaly_score", "anomaly_flag", "anomaly_reason", "structuring_flag", "small_tx_share"]
     out = {"gid": g}
     for k in keys:
         v = r[k]
@@ -68,6 +78,8 @@ def node_info(gid) -> dict:
     out["role_ru"] = ROLE_RU[r.role]
     rank = int((DF().priority_score > r.priority_score).sum()) + 1
     out["priority_rank"] = rank
+    requests = _data_requests()
+    out["data_requests"] = requests.loc[requests.gid == g, ["request", "reason"]].to_dict("records")
     return out
 
 
@@ -203,6 +215,10 @@ def node_card(gid) -> str:
         lines.append("**Крупнейшие получатели:** " + ", ".join(
             f"{p['gid']} ({p['role_ru']}, {p['sum_kzt']:,.0f} ₸)" for p in nb["receivers"][:3]))
     flags = []
+    if i["structuring_flag"]:
+        flags.append(f"признаки дробления у порога: {i['small_tx_share']:.0%} входящих переводов от 5 до 10 тыс ₸")
+    if i["anomaly_flag"]:
+        flags.append(f"аномальный профиль: {i['anomaly_reason']}")
     if i["fast_transit_share"] and i["fast_transit_share"] >= 0.5:
         flags.append(f"{i['fast_transit_share'] * 100:.0f}% исходящих ушло в течение 2 дней после поступления")
     if i["max_payers_same_day"] and i["max_payers_same_day"] >= 3:
@@ -216,9 +232,11 @@ def node_card(gid) -> str:
         flags.append("seed: входящие извне выборки не видны, соотношение отдал/получил некорректно")
     if flags:
         lines.append("**На что обратить внимание:**\n" + "\n".join(f"- {f}" for f in flags))
+    for request in i["data_requests"]:
+        lines.append(f"**Рекомендуемый запрос данных:** {request['request']}. Основание: {request['reason']}")
     lines.append("_Гипотеза для углублённой проверки, не вывод о виновности._")
     return "\n\n".join(lines)
 
 
 TOOLS = {f.__name__: f for f in
-         [node_info, neighbors, trace_money, common_receivers, top_nodes, cluster_info, simulate_removal, node_card]}
+         [node_info, neighbors, trace_money, common_receivers, top_nodes, cluster_info, simulate_removal, node_card, data_gaps]}

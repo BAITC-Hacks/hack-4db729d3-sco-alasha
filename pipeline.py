@@ -21,6 +21,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import IsolationForest
 
 # Windows-консоль в cp1251 не печатает часть символов — не даём пайплайну упасть из-за кодировки
 for _stream in (sys.stdout, sys.stderr):
@@ -44,6 +45,11 @@ THRESHOLDS = {
     "coordinator_min_in_kzt_pct": 0.75,  # входящий оборот не ниже 75-го перцентиля узлов с входом и выходом
     "terminal_fwd_prob_max": 0.35,     # для узлов 4-го колена: P(пересылает дальше) < 0.35 -> terminal
     "terminal_min_kzt": 100_000,       # terminal: >= 100 тыс ₸ ИЛИ >= 2 плательщиков, иначе мелкий получатель -> peripheral
+    "structuring_min_tx": 5,
+    "structuring_share": 0.7,
+    "anomaly_top_share": 0.03,
+    "data_request_min_kzt": 500_000,
+    "data_request_max_pass_through": 0.3,
 }
 
 ROLE_WEIGHT = {"coordinator": 1.0, "consolidator": 0.9, "distributor": 0.75,
@@ -174,6 +180,51 @@ def cycle_features(G: nx.DiGraph, df: pd.DataFrame) -> pd.DataFrame:
     return df.fillna({"cycles": 0})
 
 
+def anomaly_features(df: pd.DataFrame, tx: pd.DataFrame, T: dict) -> pd.DataFrame:
+    """Дополнительные сигналы: дробление у порога и необычный профиль своего колена.
+
+    Z-оценки считаются внутри depth (константы получают 0). IsolationForest
+    обучается только на активных узлах; больший перцентиль означает большую
+    аномальность. Причина описывает максимальное отклонение, не вклад в модель.
+    """
+    small = tx.sum_kzt.ge(5_000) & tx.sum_kzt.lt(10_000)
+    shares = small.groupby(tx.dst).mean()
+    df["small_tx_share"] = shares.reindex(df.index, fill_value=0).astype(float)
+    df["structuring_flag"] = (df.in_tx >= T["structuring_min_tx"]) & (df.small_tx_share >= T["structuring_share"])
+    df["anomaly_score"] = 0.0
+    df["anomaly_flag"] = False
+    df["anomaly_reason"] = ""
+    X = pd.DataFrame({
+        "входящий оборот": np.log1p(df.in_kzt),
+        "исходящий оборот": np.log1p(df.out_kzt),
+        "число плательщиков": df.in_deg,
+        "число получателей": df.out_deg,
+        "средний входящий чек": np.log1p(df.avg_tx_in),
+        "доля быстрого транзита": df.fast_transit_share,
+        "максимум плательщиков за день": df.max_payers_same_day,
+        "число циклов": np.log1p(df.cycles),
+    }, index=df.index)
+    groups = X.groupby(df.depth)
+    z = ((X - groups.transform("mean")) / groups.transform("std").replace(0, np.nan)).fillna(0)
+    active = z.loc[(df.in_deg + df.out_deg) > 0].sort_index()
+    if active.empty:
+        return df
+    model = IsolationForest(n_estimators=300, random_state=SEED)
+    model.fit(active)
+    unusual = pd.Series(-model.score_samples(active), index=active.index)
+    df.loc[active.index, "anomaly_score"] = unusual.rank(pct=True)
+    # Точная верхняя доля; при равных скорах порядок gid обеспечивает воспроизводимость.
+    n_flagged = int(np.ceil(len(active) * T["anomaly_top_share"]))
+    flagged = unusual.sort_values(ascending=False, kind="stable").head(n_flagged).index
+    df.loc[flagged, "anomaly_flag"] = True
+    for g in flagged:
+        feature = z.loc[g].abs().idxmax()
+        value = z.at[g, feature]
+        direction = "выше" if value >= 0 else "ниже"
+        df.at[g, "anomaly_reason"] = f"{feature} {direction} среднего своего колена на {abs(value):.1f} σ"
+    return df
+
+
 def forward_probability(df: pd.DataFrame) -> pd.DataFrame:
     """
     ЛОВУШКА 1 (решение). Для узлов 1..3 колена мы ЗНАЕМ, переслали ли они деньги дальше
@@ -187,16 +238,17 @@ def forward_probability(df: pd.DataFrame) -> pd.DataFrame:
     }, index=df.index)
     train = df.depth.between(1, 3) & ~df.is_seed & (df.in_deg > 0)
     y = (df.loc[train, "out_deg"] > 0).astype(int)
-    mu, sd = X[train].mean(), X[train].std().replace(0, 1)
-    Xs = (X[train] - mu) / sd
-    # честная проверка качества на отложенной выборке (25%), затем обучение на всех узлах 1..3 колена
+    # честная проверка на отложенной выборке (25%): сначала разделение, стандартизация — только по train
     from sklearn.metrics import roc_auc_score
     from sklearn.model_selection import train_test_split
-    Xtr, Xte, ytr, yte = train_test_split(Xs, y, test_size=0.25, random_state=SEED, stratify=y)
-    hold = LogisticRegression(max_iter=1000, random_state=SEED).fit(Xtr, ytr)
-    p_te = hold.predict_proba(Xte)[:, 1]
-    auc = float(roc_auc_score(yte, p_te))
+    Xtr, Xte, ytr, yte = train_test_split(X[train], y, test_size=0.25, random_state=SEED, stratify=y)
+    m_tr, s_tr = Xtr.mean(), Xtr.std().replace(0, 1)
+    hold = LogisticRegression(max_iter=1000, random_state=SEED).fit((Xtr - m_tr) / s_tr, ytr)
+    auc = float(roc_auc_score(yte, hold.predict_proba((Xte - m_tr) / s_tr)[:, 1]))
     base_auc = float(roc_auc_score(yte, Xte["in_deg"]))   # однофакторный бейзлайн: число плательщиков
+    # финальная модель — на всех узлах 1..3 колена
+    mu, sd = X[train].mean(), X[train].std().replace(0, 1)
+    Xs = (X[train] - mu) / sd
     # проверка на "искусственной границе": обучение на коленах 1-2, прогноз для колена 3 только по входящим
     # признакам и сравнение с наблюдаемыми исходящими 3-го колена — имитирует перенос на обрезанное 4-е колено
     tr12 = train & df.depth.between(1, 2)
@@ -427,7 +479,39 @@ def why_text(g, r) -> str:
         parts.append(f"до {int(r.max_payers_same_day)} плательщиков в один день")
     if r.cycles:
         parts.append(f"на {int(r.cycles)} циклах возврата")
+    if r.structuring_flag:
+        parts.append(f"признаки дробления у порога: {r.small_tx_share:.0%} входящих переводов от 5 до 10 тыс ₸")
+    if r.anomaly_flag:
+        parts.append(f"аномальный профиль: {r.anomaly_reason}")
     return "; ".join(parts) + ". Гипотеза для проверки, не вывод о виновности."
+
+
+def data_requests(df: pd.DataFrame, T: dict) -> pd.DataFrame:
+    """По одной строке на рекомендуемый запрос; у узла может быть несколько запросов."""
+    rows = []
+    for g, r in df.iterrows():
+        requests = []
+        if r.depth == 4 and r.in_deg >= 1 and (r.p_forward >= T["terminal_fwd_prob_max"] or r.in_kzt >= T["data_request_min_kzt"]):
+            requests.append(("выписка исходящих переводов за июль",
+                             f"4-е колено: вход {fmt_kzt(r.in_kzt)} ₸, P(пересылает)={r.p_forward:.2f}; исходящие не выгружены"))
+        if r.is_seed and r.out_kzt >= T["data_request_min_kzt"]:
+            requests.append(("входящие поступления из-за пределов выборки",
+                             f"seed: отправил {fmt_kzt(r.out_kzt)} ₸, входящие из-за пределов выборки не видны"))
+        if r.structuring_flag:
+            requests.append(("переводы ниже 5 000 ₸ и межбанковские за тот же период",
+                             f"признаки дробления: {r.small_tx_share:.0%} из {int(r.in_tx)} входящих переводов от 5 до 10 тыс ₸"))
+        if (r.role in ("consolidator", "coordinator") and not r.is_seed and r.depth < 4
+                and (pd.isna(r.pass_through) or r.pass_through < T["data_request_max_pass_through"])):
+            onward = "доля дальнейших переводов неизвестна" if pd.isna(r.pass_through) else f"дальше ушло лишь {r.pass_through:.0%}"
+            requests.append(("межбанковские переводы и снятие наличных",
+                             f"собрал {fmt_kzt(r.in_kzt)} ₸, {onward}; проверить потоки вне выборки"))
+        for request, reason in requests:
+            rows.append({"gid": int(g), "request": request, "reason": reason, "priority_score": float(r.priority_score)})
+    result = pd.DataFrame(rows, columns=["gid", "request", "reason", "priority_score"])
+    result = result.sort_values(["priority_score", "gid", "request"], ascending=[False, True, True]).reset_index(drop=True)
+    result["gid"] = result.gid.astype("int64")
+    result.insert(0, "rank", range(1, len(result) + 1))
+    return result
 
 
 # ---------------------------------------------------------------- устойчивость
@@ -488,6 +572,7 @@ def main():
     df, reach = structural_features(G, nodes)
     df = temporal_features(df, tx, THRESHOLDS["transit_fast_days"])
     df = cycle_features(G, df)
+    df = anomaly_features(df, tx, THRESHOLDS)
     print(f"[2/7] метрики посчитаны ({time.time() - t0:.1f}s)")
 
     df, model_info = forward_probability(df)
@@ -510,7 +595,8 @@ def main():
     extra = ["sub_role", "depth", "is_seed", "in_deg", "out_deg", "in_kzt", "out_kzt", "in_tx", "out_tx",
              "pass_through", "seed_payers", "near_seeds", "seed_reach", "p_forward", "fast_transit_share",
              "max_payers_same_day", "cycles", "pagerank", "hub", "authority", "betweenness",
-             "truncated_by_depth", "prio_role", "prio_reach", "prio_money", "prio_pagerank", "prio_betw"]
+             "truncated_by_depth", "prio_role", "prio_reach", "prio_money", "prio_pagerank", "prio_betw",
+             "anomaly_score", "anomaly_flag", "anomaly_reason", "structuring_flag", "small_tx_share"]
     nr = nr[req + extra].sort_values("priority_score", ascending=False)
     nr["gid"] = nr.gid.astype("int64")
     nr.to_csv(out / "nodes_roles.csv", index=False)
@@ -527,7 +613,14 @@ def main():
                        "priority_score": top.priority_score.values,
                        "why": [why_text(g, r) for g, r in top.iterrows()]})
     tn.to_csv(out / "top_nodes.csv", index=False)
-    print(f"[6/7] выгрузки: nodes_roles={len(nr)}, clusters={len(ct)}, top_nodes={len(tn)}")
+    requests = data_requests(df, THRESHOLDS)
+    requests.to_csv(out / "data_requests.csv", index=False)
+    extras = {"anomaly_nodes": int(df.anomaly_flag.sum()), "structuring_nodes": int(df.structuring_flag.sum()),
+              "active_nodes": int(((df.in_deg + df.out_deg) > 0).sum()),
+              "data_requests": len(requests), "data_request_nodes": int(requests.gid.nunique())}
+    print(f"[6/7] выгрузки: nodes_roles={len(nr)}, clusters={len(ct)}, top_nodes={len(tn)}, "
+          f"anomalies={extras['anomaly_nodes']}, structuring={extras['structuring_nodes']}, "
+          f"data_requests={len(requests)} ({extras['data_request_nodes']} узлов)")
 
     validate(nr, ct, tn, nodes)
 
@@ -537,7 +630,7 @@ def main():
     with open(out / "graph.pkl", "wb") as f:
         pickle.dump({"G": G, "df": df, "tx": tx, "pos": pos, "clusters": ct}, f)
     meta = {"thresholds": THRESHOLDS, "role_weight": ROLE_WEIGHT, "forward_model": model_info,
-            "resilience": res, "runtime_sec": round(time.time() - t0, 1)}
+            "resilience": res, "extras": extras, "runtime_sec": round(time.time() - t0, 1)}
     (out / "run_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2, default=float), encoding="utf-8")
     print(f"[7/7] готово за {time.time() - t0:.1f}s, выгрузки в {out}/")
 

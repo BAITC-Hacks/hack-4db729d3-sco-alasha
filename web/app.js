@@ -157,6 +157,8 @@ function renderNode(d) {
   const n = d.node, i = d.info, c = S.summary.colors[n.role];
   const pt = i.pass_through == null ? "—" : Math.round(i.pass_through * 100) + "%";
   const flags = [];
+  if (i.structuring_flag) flags.push(`признаки дробления у порога: ${Math.round(i.small_tx_share * 100)}% входящих переводов от 5 до 10 тыс ₸`);
+  if (i.anomaly_flag) flags.push(`аномальный профиль: ${i.anomaly_reason}`);
   if (i.fast_transit_share >= 0.5) flags.push(`${Math.round(i.fast_transit_share * 100)}% исходящих ушло в течение 2 дней после поступления`);
   if (i.max_payers_same_day >= 3) flags.push(`синхронные поступления: до ${i.max_payers_same_day} плательщиков в один день`);
   if (i.cycles) flags.push(`участвует в ${i.cycles} циклах возврата средств (≤6 шагов)`);
@@ -187,6 +189,7 @@ function renderNode(d) {
       <button class="btn" id="btn-ask">🤖 Спросить AI об узле</button>
     </div>
     ${flags.length ? `<div class="block flags"><h4>На что обратить внимание</h4>${flags.map((f) => `<div>⚠ ${esc(f)}</div>`).join("")}</div>` : ""}
+    ${(i.data_requests || []).length ? `<div class="block"><h4>Рекомендуемые запросы данных</h4>${i.data_requests.map((r) => `<p>${esc(r.request)}<br><span class="muted small">${esc(r.reason)}</span></p>`).join("")}</div>` : ""}
     <div class="block"><h4>Из чего сложился приоритет</h4>
       ${Object.keys(prioNames).map((k) => `<div class="hbar"><span>${prioNames[k]} <span class="muted">×${prioW[k]}</span></span><div class="t"><div style="width:${d.prio[k] * 100}%"></div></div><span>${d.prio[k].toFixed(2)}</span></div>`).join("")}
     </div>
@@ -319,8 +322,25 @@ function renderMethod() {
       <div class="metric"><b>${m.boundary_test_train_depth_1_2_test_depth_3_auc}</b><span>AUC, граница 1–2 → 3 (бейзлайн ${m.boundary_test_baseline_auc})</span></div>
     </div>
     <div class="small muted">Перенос между коленами слабый, поэтому порог консервативный: terminal только ${s.depth4.terminal} из ${s.depth4.total} узлов 4-го колена, остальные честно помечены как неопределённые.</div>
+    <h3 style="margin-top:14px">Дробление и аномальные профили</h3>
+    <div class="small">Признаки дробления: не менее ${t.structuring_min_tx} входящих переводов, из них ≥ ${t.structuring_share * 100}% на сумму 5 000–9 999,99 ₸. IsolationForest выделяет верхние ${t.anomaly_top_share * 100}% активных узлов после нормировки признаков внутри колена. Объяснение — наибольшее отклонение признака; это сигнал для проверки.</div>
+    <h3 style="margin-top:14px">Оценка полноты: какие данные запросить</h3>
+    <div class="small muted">Топ-12 запросов по приоритету узла. Для одного gid возможны разные запросы.</div>
+    <div id="data-requests" class="small">Загрузка рекомендаций…</div>
+    <p class="small"><a href="/api/download/data_requests.csv">Скачать все запросы CSV</a></p>
     <h3 style="margin-top:14px">Архитектура</h3>
-    <div class="small">Web UI → <b>FastAPI</b> (<a href="/docs" target="_blank">/docs</a>) → AI-агент (LLM + tool calling) → <b>MCP-клиент</b> → <b>MCP-сервер graph-intel</b> (8 tools) → граф. Пайплайн: ${s.runtime_sec} с, 8 автопроверок контрактов ТЗ.</div>`;
+    <div class="small">Web UI → <b>FastAPI</b> (<a href="/docs" target="_blank">/docs</a>) → AI-агент (LLM + tool calling) → <b>MCP-клиент</b> → <b>MCP-сервер graph-intel</b> (9 tools) → граф. Пайплайн: ${s.runtime_sec} с, 8 автопроверок контрактов ТЗ.</div>`;
+  renderDataRequests();
+}
+
+async function renderDataRequests() {
+  const box = $("#data-requests");
+  try {
+    const rows = await api("/api/data_requests?n=12");
+    box.innerHTML = rows.length ? rows.map((r) => `<div class="block"><span class="gidlink" data-gid="${esc(r.gid)}">${esc(r.gid)}</span> · приоритет ${r.priority_score.toFixed(3)}<br><b>${esc(r.request)}</b><br><span class="muted">${esc(r.reason)}</span></div>`).join("") : "Нет рекомендуемых запросов данных.";
+  } catch (e) {
+    box.textContent = `Не удалось загрузить запросы: ${e.message}`;
+  }
 }
 
 /* ---------------- вкладки, поиск, старт */

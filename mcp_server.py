@@ -68,6 +68,12 @@ def node_card(gid: str) -> str:
     return T.node_card(gid)
 
 
+@mcp.tool()
+def data_gaps(n: int = 15) -> list:
+    """Оценка полноты: какие данные запросить следующими, с gid, основаниями и приоритетом проверки."""
+    return T.data_gaps(n)
+
+
 @mcp.resource("graph://methodology")
 def methodology() -> str:
     """Пороги ролей, веса приоритета и параметры модели для 4-го колена."""

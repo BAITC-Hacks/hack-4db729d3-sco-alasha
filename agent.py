@@ -127,6 +127,8 @@ FALLBACK_SCHEMAS = [
      "parameters": {"type": "object", "properties": {"cluster_id": {"type": "integer"}}, "required": ["cluster_id"]}},
     {"name": "simulate_removal", "description": "Что станет с сетью при блокировке узлов (список gid или топ-N).",
      "parameters": {"type": "object", "properties": {"gids": {"type": "array", "items": GID}, "top_n": {"type": "integer"}}}},
+    {"name": "data_gaps", "description": "Каких данных не хватает и какие запросы сделать следующими, по приоритету узлов.",
+     "parameters": {"type": "object", "properties": {"n": {"type": "integer", "minimum": 0}}}},
 ]
 
 
@@ -154,6 +156,12 @@ async def _rule_based(q_raw: str, tb: ToolBridge) -> dict:
         ans = (f"При блокировке **{len(r['removed'])} узлов** достижимость сети от seed падает на "
                f"**{r['drop_pct']['seed_reach_pairs']}%**, оборот в графе — на {r['drop_pct']['flow_kzt']}%, "
                f"крупнейшая компонента — на {r['drop_pct']['largest_component']}%.")
+    elif not gids and any(w in q for w in ("полнот", "запросить", "не хватает", "белые пятна")):
+        s = await tb.call("data_gaps", {"n": 15})
+        steps.append(s)
+        ans = "**Какие данные запросить следующими:**\n\n" + "\n".join(
+            f"{x['rank']}. **{x['gid']}**: {x['request']}. {x['reason']}"
+            for x in s["result"])
     elif len(gids) >= 2:
         s = await tb.call("common_receivers", {"gids": gids})
         steps.append(s)

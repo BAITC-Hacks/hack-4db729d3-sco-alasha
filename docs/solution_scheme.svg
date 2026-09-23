@@ -74,8 +74,8 @@
   </text>
 
   <text x="1378" y="198" class="eyebrow">ВЫХОД</text>
-  <text x="1378" y="235" class="heading">3 CSV</text>
-  <text x="1378" y="281" class="body" style="font-size:15px"><tspan x="1378">nodes_roles.csv</tspan><tspan x="1378" dy="29">clusters.csv</tspan><tspan x="1378" dy="29">top_nodes.csv</tspan></text>
+  <text x="1378" y="235" class="heading">3 + 1 CSV</text>
+  <text x="1378" y="281" class="body" style="font-size:15px"><tspan x="1378">nodes_roles.csv</tspan><tspan x="1378" dy="29">clusters.csv</tspan><tspan x="1378" dy="29">top_nodes.csv</tspan><tspan x="1378" dy="29">data_requests.csv</tspan></text>
   <text x="1378" y="404" fill="#5eead4" font-size="21" font-weight="650">8 автопроверок</text>
   <text x="1378" y="433" class="body">контрактов</text>
 
@@ -105,7 +105,7 @@
 
   <rect x="1200" y="620" width="360" height="152" rx="16" class="card"/>
   <text x="1222" y="662" class="heading">MCP-сервер graph-intel</text>
-  <text x="1222" y="704" fill="#7dd3fc" font-size="21" font-weight="650">7 инструментов</text>
+  <text x="1222" y="704" fill="#7dd3fc" font-size="21" font-weight="650">9 инструментов · data_gaps</text>
   <text x="1222" y="735" class="small">Узлы, связи и контекст анализа</text>
 
   <line x1="40" y1="801" x2="1560" y2="801" stroke="#27344b"/>
