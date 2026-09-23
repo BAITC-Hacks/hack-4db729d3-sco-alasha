@@ -10,6 +10,11 @@ AML-аналитик знает 81 «курьера» (seed). Инструмен
 > Все выводы — **гипотезы для углублённой проверки** («признаки консолидации»), а не утверждение о виновности.
 > Персональные данные не используются, только структура переводов и суммы.
 
+**🎬 Демо-видео:** <ВСТАВЬ_ССЫЛКУ>  
+**🗺 Схема решения:** [docs/solution_scheme.svg](docs/solution_scheme.svg) · подробно: [docs/architecture.md](docs/architecture.md)  
+**👤 Автор:** Омар Масалимов (соло), GitHub [@omqrm](https://github.com/omqrm)  
+**📂 Работает на любой выгрузке той же схемы:** `python run.py --data <папка>` или кнопка **«Загрузить выгрузку»** на сайте.
+
 ## Требование ТЗ → где реализовано → как проверить
 
 | Требование ТЗ | Где реализовано | Как проверить |
@@ -27,6 +32,8 @@ AML-аналитик знает 81 «курьера» (seed). Инструмен
 | Опционально: AI-ассистент | `agent.py`, `mcp_server.py` | Вкладка «AI-аналитик» → вопрос об общих получателях; видны вызовы инструментов и gid |
 | Опционально: карточка узла | `graph_tools.node_card()`, `explain.py` | `python explain.py` → справки по топ-3 без UI, ключей и аккаунтов |
 | Опционально: оценка полноты | `data_requests()`, `out/data_requests.csv`, MCP `data_gaps` | «Методика» → топ-12 запросов; `/api/data_requests?n=12`; в карточке — рекомендации для gid |
+| Дополнительно: другой датасет той же схемы | `set_dataset_params()`, `run.py --data/--out`, `tests/test_other_dataset.py` | `python run.py --data <папка>`; тест прогоняет пайплайн на двух подмножествах |
+| Дополнительно: загрузка выгрузки через сайт | `/api/upload`, `/api/dataset/reset`, окно в `web/`, `tests/test_upload.py` | Кнопка «Загрузить выгрузку» → три `.parquet` → пересчёт; лишние колонки отклоняются |
 
 ---
 
@@ -132,7 +139,7 @@ LLM сама решает, что вызвать, вызовы идут чере
 | `graph_tools.py` | инструменты графа: node_info, node_card, neighbors, trace_money, common_receivers, top_nodes, cluster_info, simulate_removal, data_gaps |
 | `mcp_server.py` | MCP-сервер graph-intel (FastMCP): те же инструменты по протоколу MCP (stdio / Streamable HTTP) |
 | `agent.py` | AI-агент: MCP-клиент + LLM function calling; fallback на правилах |
-| `server.py` | backend FastAPI: `/api/summary, /api/top, /api/search, /api/node/{gid}, /api/graph, /api/flow/{gid}, /api/clusters, /api/simulate, /api/ask, /api/health, /api/download` |
+| `server.py` | backend FastAPI: `/api/summary, /api/top, /api/search, /api/node/{gid}, /api/graph, /api/flow/{gid}, /api/clusters, /api/simulate, /api/ask, /api/health, /api/download, /api/data_requests, /api/upload, /api/dataset, /api/dataset/reset` |
 | `web/` | фронтенд (HTML/CSS/JS, vis-network лежит локально в `web/vendor`, без CDN) |
 | `run.py` | запуск всего одной командой |
 | `explain.py` | справка и пять крупнейших контрагентов по каждому gid из командной строки |
@@ -146,6 +153,7 @@ LLM сама решает, что вызвать, вызовы идут чере
 - **🤖 AI-аналитик**: чат, шаги агента с вызовами MCP-инструментов, подсветка найденных узлов.
 - **Стресс-тест**: «заблокировать топ-N», узлы гаснут на схеме, кривая «наш приоритет vs случайные узлы».
 - **Методика**: правила ролей, формула приоритета, метрики модели 4-го колена. Выгрузки CSV скачиваются из шапки.
+- **Загрузить выгрузку**: свои три `.parquet` той же схемы → проверка колонок → пересчёт пайплайна → сайт переключается на новые данные; бейдж в шапке показывает активную выгрузку, «Вернуть исходную» — обратно.
 
 ---
 
@@ -283,7 +291,9 @@ Louvain (networkx, `seed=42`, детерминирован) на неориен�
 5. Вкладка **Стресс-тест**: ползунок «заблокировать топ-N».
 6. Вкладка **🤖 AI-аналитик**: пример «Кто собирает деньги с …» → шаги `MCP · common_receivers`, `MCP · trace_money`, ответ с gid,
    подсветка на графе. Без ключа работает режим правил на тех же MCP-инструментах.
-7. http://localhost:8000/docs: Swagger всех эндпоинтов.
+7. Кнопка **«Загрузить выгрузку»** в шапке: загрузить три `.parquet` той же схемы (например, подмножество из
+   `python tests/make_subset.py --out tmp/subset --mode seeds`) → KPI, топ и граф пересчитаются; «Вернуть исходную» — обратно.
+8. http://localhost:8000/docs: Swagger всех эндпоинтов.
 
 ## 🔌 MCP-сервер отдельно (AI-интерфейс к графу расследования)
 
@@ -308,6 +318,7 @@ resources: `graph://methodology`, `graph://node/{gid}`; prompt: `investigate`.
 - Баланс узла неполный (входящие извне выборки не видны), поэтому pass_through — индикатор, а не бухгалтерия.
 - Ground truth нет: пороги выбраны по распределениям данных и смыслу ролей, их можно менять в `THRESHOLDS`.
 - Модель для 4-го колена переносит поведение колен 1–3 на 4-е; проверка на искусственной границе показывает слабый перенос (AUC 0.60), поэтому такие узлы помечены отдельно и роль им присваивается консервативно.
+- Загрузка через сайт принимает только исходную схему (`nodes`, `edges`, `transactions`); пока активна загруженная выгрузка, AI-аналитик вызывает инструменты напрямую, а не через MCP-процесс.
 - `near_seeds`, быстрый транзит и циклы — структурные признаки: они не доказывают прохождение тех же самых денег (суммы входа и выхода не сопоставляются по цепочке).
 
 ## 📈 Масштабирование до ~1 млн узлов
@@ -325,7 +336,7 @@ resources: `graph://methodology`, `graph://node/{gid}`; prompt: `investigate`.
 ## 🧰 Технологии и сторонние компоненты (п. 5.4.4)
 
 Python 3.11 · pandas · pyarrow · networkx (PageRank, HITS, betweenness, Louvain, simple_cycles) · scikit-learn
-(LogisticRegression) · FastAPI · uvicorn · vis-network 9.1.2 (лежит в `web/vendor`, Apache-2.0/MIT) · MCP Python SDK 1.30 (FastMCP + клиент) ·
+(LogisticRegression) · FastAPI · uvicorn · python-multipart (загрузка файлов) · vis-network 9.1.2 (лежит в `web/vendor`, Apache-2.0/MIT) · MCP Python SDK 1.30 (FastMCP + клиент) ·
 openai SDK (опционально) · Streamlit + pyvis + plotly (запасной интерфейс).
 Стартовый код организаторов — `starter/` (без изменений, используется как эталон схемы выгрузок).
 
