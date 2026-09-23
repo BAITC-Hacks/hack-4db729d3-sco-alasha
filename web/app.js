@@ -77,8 +77,8 @@ function initGraph() {
     autoResize: true,
     nodes: { shape: "dot", font: { color: "#1f2937", size: 14, face: "Segoe UI", strokeWidth: 4, strokeColor: "#ffffff" }, borderWidth: 2 },
     edges: { arrows: { to: { enabled: true, scaleFactor: .7 } }, smooth: { type: "continuous" }, color: { color: "#94a3b8", opacity: .6, highlight: "#426e52", hover: "#64748b" }, selectionWidth: 1 },
-    physics: { solver: "barnesHut", barnesHut: { gravitationalConstant: -5500, springLength: 110, springConstant: .04, damping: .3 }, stabilization: { iterations: 220 } },
-    interaction: { hover: true, tooltipDelay: 160, zoomSpeed: .55, navigationButtons: false },
+    physics: { solver: "barnesHut", barnesHut: { gravitationalConstant: -8000, springLength: 140, avoidOverlap: 0.6, springConstant: .04, damping: .3 }, stabilization: { iterations: 220 } },
+    interaction: { hover: true, tooltipDelay: 160, zoomView: true, dragView: true, zoomSpeed: .55, navigationButtons: false },
     layout: { improvedLayout: false, randomSeed: 42 }
   });
   S.net.on("click", (p) => { if (p.nodes.length) handle(selectNode(p.nodes[0], false)); });
@@ -87,23 +87,49 @@ function initGraph() {
   });
   S.net.on("stabilizationIterationsDone", () => {
     S.net.setOptions({ physics: false });
-    fitReadableGraph();
+    scheduleGraphFit();
   });
-  S.net.on("resize", () => requestAnimationFrame(() => {
-    if (S.net.getScale() < 0.8) fitReadableGraph();
-  }));
+  S.net.on("resize", () => requestAnimationFrame(scheduleGraphFit));
+  S.net.on("animationFinished", () => {
+    graphFitActive = false;
+    if (graphFitQueued && !graphViewManual) requestAnimationFrame(fitGraph);
+  });
+  // Cancel camera motion before vis handles the wheel or starts a drag.
+  $("#graph").addEventListener("wheel", takeGraphControl, { capture: true, passive: true });
+  $("#graph").addEventListener("pointerdown", takeGraphControl, { capture: true, passive: true });
+  S.net.on("zoom", takeGraphControl); // Also covers touch pinch zoom.
 }
-// Fit synchronously before checking the resulting scale; animated fit reports
-// the old scale until the animation finishes. Manual "fit all" stays unrestricted.
-function fitReadableGraph() {
-  const nodes = S.nodes.get();
-  if (!nodes.length || !$("#graph").clientWidth || !$("#graph").clientHeight) return;
-  S.net.fit({ padding: 40, animation: false });
-  if (S.net.getScale() < 0.8) {
-    const target = S.sel && S.nodes.get(S.sel) ? S.sel :
-      [...nodes].sort((a, b) => b._raw.priority - a._raw.priority)[0].id;
-    S.net.moveTo({ position: S.net.getPositions([target])[target], scale: 0.9, animation: false });
-  }
+
+let graphFitTimer, graphFitActive = false, graphFitQueued = false, graphViewManual = false;
+function fitGraph() {
+  if (graphViewManual || !S.net || !S.nodes.length || !$("#graph").clientWidth || !$("#graph").clientHeight) return;
+  // Overlapping vis animations can leave a redraw callback that resets wheel zoom.
+  if (graphFitActive) { graphFitQueued = true; return; }
+  graphFitQueued = false;
+  graphFitActive = true;
+  S.net.fit({ animation: { duration: 400 } });
+}
+function scheduleGraphFit() {
+  if (graphViewManual) return;
+  clearTimeout(graphFitTimer);
+  fitGraph();
+  graphFitTimer = setTimeout(fitGraph, 300);
+}
+function takeGraphControl() {
+  graphViewManual = true;
+  clearTimeout(graphFitTimer);
+  graphFitQueued = false;
+  if (!graphFitActive) return;
+  const position = S.net.getViewPosition(), scale = S.net.getScale();
+  graphFitActive = false;
+  // Advance even a just-started animation before cancelling through the public API.
+  S.net.redraw();
+  S.net.moveTo({ position, scale, animation: false });
+}
+function zoomGraph(factor) {
+  if (!S.net) return;
+  takeGraphControl();
+  S.net.moveTo({ scale: Math.max(.08, Math.min(S.net.getScale() * factor, 4)), animation: false });
 }
 
 function refreshGraphSelection() {
@@ -112,8 +138,6 @@ function refreshGraphSelection() {
   })));
   if (S.nodes.get(S.sel)) {
     S.net.selectNodes([S.sel]);
-    S.net.moveTo({ position: S.net.getPositions([S.sel])[S.sel],
-      scale: S.net.getScale() < 0.8 ? 0.9 : S.net.getScale(), animation: false });
   }
 }
 
@@ -121,7 +145,7 @@ function toVisNode(n, opts = {}) {
   const removed = S.removed.has(n.id), selected = n.id === S.sel, c = COLORS[n.role];
   return {
     id: n.id, label: opts.label || opts.focus || selected ? short(n.id) : "", shape: n.seed ? "star" : "dot",
-    size: 14 + 30 * n.priority + (selected ? 10 : 0),
+    size: n.seed ? 10 : 8 + 18 * n.priority,
     color: removed ? {
       background: "#cbd5e1", border: "#b45353",
       highlight: { background: "#cbd5e1", border: "#991b1b" },
@@ -138,6 +162,8 @@ function toVisNode(n, opts = {}) {
 
 
 function renderGraph(g, { focus = [], hierarchical = false } = {}) {
+  takeGraphControl();
+  graphViewManual = false;
   clearFlow();
   const fs = new Set(focus.map(String));
   const maxSum = Math.max(1, ...g.edges.map((e) => e.sum));
@@ -157,10 +183,8 @@ function renderGraph(g, { focus = [], hierarchical = false } = {}) {
   }));
   $("#graph-info").textContent = `${g.nodes.length} узлов · ${g.edges.length} связей`;
   $("#graph-title").textContent = ({top:"Карта ключевых связей",ego:"Окружение клиента",cluster:"Связи внутри кластера",flow:"Путь движения денег",ids:"Связи найденных клиентов"})[S.mode] || "Карта связей";
-  if (hierarchical) requestAnimationFrame(() => {
-    if (S.mode === "flow") fitReadableGraph();
-  });
-  else { S.net.setOptions({ physics: { enabled: true } }); S.net.stabilize(260); }
+  if (!hierarchical) { S.net.setOptions({ physics: { enabled: true } }); S.net.stabilize(260); }
+  requestAnimationFrame(scheduleGraphFit);
 }
 
 
@@ -440,9 +464,11 @@ $$("#tabs button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
 $$("[data-nav]").forEach(b => b.onclick = () => switchTab(b.dataset.nav));
 $$("#modes button").forEach(b => b.onclick = () => handle(setMode(b.dataset.mode)));
 $$("#radius button").forEach(b => b.onclick = () => { S.radius = +b.dataset.r; $$("#radius button").forEach(x => x.classList.toggle("active",x === b)); if (S.mode === "ego") handle(loadGraph()); });
-$("#btn-fit").onclick = () => S.net?.fit({padding:40,animation:{duration:350}});
-$("#btn-zoom-in").onclick = () => { if(S.net) S.net.moveTo({scale:Math.min(S.net.getScale()*1.25,4),animation:{duration:180}}); };
-$("#btn-zoom-out").onclick = () => { if(S.net) S.net.moveTo({scale:Math.max(S.net.getScale()/1.25,.08),animation:{duration:180}}); };
+$$("#btn-fit, #btn-fit-toolbar").forEach(button => {
+  button.onclick = () => { graphViewManual = false; scheduleGraphFit(); };
+});
+$("#btn-zoom-in").onclick = () => zoomGraph(1.25);
+$("#btn-zoom-out").onclick = () => zoomGraph(1 / 1.25);
 $("#btn-close-detail").onclick = () => { document.body.classList.remove("detail-open"); document.body.classList.add("detail-collapsed"); requestAnimationFrame(() => S.net?.redraw()); };
 $("#stress-n").oninput = () => { $("#stress-n-val").textContent = $("#stress-n").value; clearTimeout(stressT); stressT = setTimeout(runStress,250); };
 $("#ask-form").onsubmit = e => { e.preventDefault(); if(S.asking) return; const q=$("#ask-input").value; $("#ask-input").value=""; handle(ask(q)); };
@@ -494,7 +520,8 @@ async function start() {
   kpi("money",`${(s.turnover/1e6).toFixed(0)} <span class="unit">млн ₸</span>`,"Общий оборот",`${fmtN(s.edges)} связей между клиентами`)+
   kpi("shield",s.roles.coordinator||0,"Кандидатов в координаторы","Гипотезы для углублённой проверки")+
   kpi("grid",s.clusters,"Кластеров сети","Группы связанных участников");
- $("#legend").innerHTML=Object.keys(COLORS).map(r=>`<span><i style="background:${COLORS[r]}"></i>${s.role_ru[r]}</span>`).join("")+'<span title="Клиенты исходного списка">★ seed</span>';
+ const graphRoles = { coordinator: "координатор", consolidator: "консолидатор", distributor: "распределитель", transit: "транзит", terminal: "конечный", peripheral: "периферия" };
+ $("#legend").innerHTML=Object.keys(COLORS).map(r=>`<span><i style="background:${COLORS[r]}"></i>${graphRoles[r]}</span>`).join("")+'<span title="Клиенты исходного списка">★ seed</span>';
  const top=await api("/api/top?n=30");
  $("#top-count").textContent=top.length;
  $("#toplist").innerHTML=top.map(n=>`<button class="item" data-gid="${n.id}" title="Клиент ${n.id}"><span class="rank">${String(n.rank).padStart(2,"0")}</span><span><span class="gid">${short(n.id)}</span><br>${roleBadge(n.role)}<span class="bar" style="display:block"><span style="display:block;height:100%;width:${n.priority*100}%;background:#94b99f"></span></span></span><span class="p">${n.priority.toFixed(2)}</span></button>`).join("");

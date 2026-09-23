@@ -64,28 +64,52 @@ body[data-view="method"] .tab,body[data-view="clusters"] .tab{padding:22px 18px}
 @media(min-width:1321px){.tabs button{font-size:13px}.seg button{font-size:11px}.list-caption{font-size:10px}.kpi-label{font-size:12px}}
 @media(max-width:760px){.badge{font-size:10px}.live-label{display:none}.seg button{padding:6px 8px}.evidence{font-size:12px}}
 
-/* Graph readability: reserve real canvas height, including in split-pane modes.
-   The extra 200px holds the heading, controls and legend outside the canvas. */
+/* Let the canvas define the graph row's height; side panes keep their scrolling. */
 body[data-view="node"] .layout,
 body[data-view="ai"] .layout,
 body[data-view="stress"] .layout {
-  height: max(760px, calc(100vh - 180px));
-  min-height: 760px;
+  height: auto;
+  min-height: 0;
 }
 .graph-stage {
   box-sizing: content-box;
-  min-height: max(560px, calc(100vh - 380px));
+  flex: none;
+  height: max(560px, calc(100vh - 260px));
+  min-height: max(560px, calc(100vh - 260px));
+}
+.graph-fit { margin-left: auto; padding: 6px 10px; font-size: 11px; }
+.graph-key {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 2;
+  width: 330px;
+  max-width: calc(100% - 76px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  pointer-events: none;
+}
+.graph-key .graph-hint { position: static; max-width: 100%; }
+.graph-key .legend {
+  min-height: 0;
+  gap: 5px 10px;
+  padding: 8px 10px;
+  border: 1px solid #e4ece6;
+  border-radius: 7px;
+  background: #fffffff0;
+  color: #526d5c;
+  font-size: 10px;
+}
+@media (min-width: 761px) {
+  body[data-view="node"] .layout > .left,
+  body[data-view="node"] .layout > .right,
+  body[data-view="ai"] .layout > .right,
+  body[data-view="stress"] .layout > .right { contain: size; }
 }
 @media (max-width: 760px) {
-  body[data-view="node"] .layout,
-  body[data-view="ai"] .layout,
-  body[data-view="stress"] .layout {
-    height: auto;
-    min-height: 0;
-  }
   body[data-view="node"] .center,
   body[data-view="ai"] .center,
-  body[data-view="stress"] .center {
-    height: max(760px, calc(100vh - 180px));
-  }
+  body[data-view="stress"] .center { height: auto; }
 }
