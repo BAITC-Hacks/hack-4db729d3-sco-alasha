@@ -1,0 +1,69 @@
+{
+  "thresholds": {
+    "consolidator_min_payers": 4,
+    "distributor_min_receivers": 10,
+    "transit_pt_low": 0.8,
+    "transit_pt_high": 1.2,
+    "transit_fast_days": 2,
+    "coordinator_min_near_seeds": 3,
+    "coordinator_min_role_payers": 2,
+    "coordinator_min_in_kzt_pct": 0.75,
+    "terminal_fwd_prob_max": 0.35,
+    "terminal_min_kzt": 100000
+  },
+  "role_weight": {
+    "coordinator": 1.0,
+    "consolidator": 0.9,
+    "distributor": 0.75,
+    "transit": 0.6,
+    "terminal": 0.35,
+    "peripheral": 0.05
+  },
+  "forward_model": {
+    "features": [
+      "log_in_kzt",
+      "in_deg",
+      "log_in_tx",
+      "log_avg_tx",
+      "active_days_in",
+      "last_in_day"
+    ],
+    "coef": {
+      "log_in_kzt": 0.779,
+      "in_deg": 0.335,
+      "log_in_tx": -0.205,
+      "log_avg_tx": -0.762,
+      "active_days_in": 0.624,
+      "last_in_day": -0.002
+    },
+    "train_size": 1723,
+    "train_forward_rate": 0.3737666860127684
+  },
+  "resilience": {
+    "base": {
+      "largest_component": 1877,
+      "edges": 3119,
+      "flow_kzt": 365890012.01000005,
+      "seed_reach_pairs": 12724
+    },
+    "top5": {
+      "largest_component": 1756,
+      "edges": 2956,
+      "flow_kzt": 335621555.0100001,
+      "seed_reach_pairs": 11696
+    },
+    "top10": {
+      "largest_component": 1715,
+      "edges": 2895,
+      "flow_kzt": 328160864.1,
+      "seed_reach_pairs": 8648
+    },
+    "top20": {
+      "largest_component": 1557,
+      "edges": 2526,
+      "flow_kzt": 302561790.1500001,
+      "seed_reach_pairs": 6531
+    }
+  },
+  "runtime_sec": 19.7
+}
