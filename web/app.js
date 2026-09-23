@@ -325,9 +325,14 @@ function renderMethod() {
 
 /* ---------------- вкладки, поиск, старт */
 function switchTab(t) {
+  const leavingStress = $("#tabs button.active")?.dataset.tab === "stress" && t !== "stress";
   $$("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
+  if (leavingStress && S.removed.size) {  // блокировка — только сценарий стресс-теста, в других видах не показываем
+    S.removed = new Set();
+    if (S.mode === "top") loadGraph();
+  }
   $$(".tab").forEach((el) => el.classList.toggle("hidden", el.id !== "tab-" + t));
-  if (t === "stress" && !$("#stress-chart").innerHTML) runStress();
+  if (t === "stress") runStress();
 }
 $$("#tabs button").forEach((b) => (b.onclick = () => switchTab(b.dataset.tab)));
 $$("#modes button").forEach((b) => (b.onclick = () => {
