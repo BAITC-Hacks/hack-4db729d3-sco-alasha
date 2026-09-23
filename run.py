@@ -45,7 +45,12 @@ def main():
     ap.add_argument("--port", type=int, default=8000)
     a = ap.parse_args()
 
-    if a.rebuild or not (ROOT / "out" / "graph.pkl").exists():
+    pkl = ROOT / "out" / "graph.pkl"
+    sources = list((ROOT / "data").glob("*.parquet")) + [ROOT / "pipeline.py"]
+    stale = pkl.exists() and any(s.stat().st_mtime > pkl.stat().st_mtime for s in sources if s.exists())
+    if stale:
+        print("   данные или pipeline.py новее результатов — пересчитываю")
+    if a.rebuild or stale or not pkl.exists():
         print("== 1/3 пайплайн: data/*.parquet -> out/ ==")
         subprocess.run([sys.executable, "pipeline.py", "--data", "data", "--out", "out"], check=True)
     else:
