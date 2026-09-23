@@ -180,11 +180,22 @@ def forward_probability(df: pd.DataFrame) -> pd.DataFrame:
     train = df.depth.between(1, 3) & ~df.is_seed & (df.in_deg > 0)
     y = (df.loc[train, "out_deg"] > 0).astype(int)
     mu, sd = X[train].mean(), X[train].std().replace(0, 1)
-    clf = LogisticRegression(max_iter=1000, random_state=SEED).fit((X[train] - mu) / sd, y)
+    Xs = (X[train] - mu) / sd
+    # честная проверка качества на отложенной выборке (25%), затем обучение на всех узлах 1..3 колена
+    from sklearn.metrics import roc_auc_score
+    from sklearn.model_selection import train_test_split
+    Xtr, Xte, ytr, yte = train_test_split(Xs, y, test_size=0.25, random_state=SEED, stratify=y)
+    hold = LogisticRegression(max_iter=1000, random_state=SEED).fit(Xtr, ytr)
+    p_te = hold.predict_proba(Xte)[:, 1]
+    auc = float(roc_auc_score(yte, p_te))
+    base_auc = float(roc_auc_score(yte, Xte["in_deg"]))   # однофакторный бейзлайн: число плательщиков
+    clf = LogisticRegression(max_iter=1000, random_state=SEED).fit(Xs, y)
     df["p_forward"] = clf.predict_proba((X - mu) / sd)[:, 1]
     df.loc[df.out_observed, "p_forward"] = (df.loc[df.out_observed, "out_deg"] > 0).astype(float)
     model_info = {"features": feats, "coef": dict(zip(feats, clf.coef_[0].round(3).tolist())),
-                  "train_size": int(train.sum()), "train_forward_rate": float(y.mean())}
+                  "train_size": int(train.sum()), "train_forward_rate": float(y.mean()),
+                  "holdout_auc": round(auc, 3), "baseline_auc_in_deg_only": round(base_auc, 3),
+                  "holdout_size": int(len(yte))}
     return df, model_info
 
 
@@ -435,7 +446,9 @@ def main():
     print(f"[2/7] метрики посчитаны ({time.time() - t0:.1f}s)")
 
     df, model_info = forward_probability(df)
-    print(f"[3/7] модель P(пересылает дальше) для 4-го колена: обучена на {model_info['train_size']} узлах")
+    print(f"[3/7] модель P(пересылает дальше) для 4-го колена: обучена на {model_info['train_size']} узлах, "
+          f"AUC на отложенной выборке {model_info['holdout_auc']} (бейзлайн по числу плательщиков "
+          f"{model_info['baseline_auc_in_deg_only']})")
 
     df = assign_roles(G, df, THRESHOLDS)
     print(f"[4/7] роли: {df.role.value_counts().to_dict()}")

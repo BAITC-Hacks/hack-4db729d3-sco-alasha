@@ -37,7 +37,10 @@
       "last_in_day": -0.002
     },
     "train_size": 1723,
-    "train_forward_rate": 0.3737666860127684
+    "train_forward_rate": 0.3737666860127684,
+    "holdout_auc": 0.708,
+    "baseline_auc_in_deg_only": 0.655,
+    "holdout_size": 431
   },
   "resilience": {
     "base": {
@@ -65,5 +68,5 @@
       "seed_reach_pairs": 6553
     }
   },
-  "runtime_sec": 18.9
+  "runtime_sec": 18.6
 }
