@@ -14,15 +14,20 @@ AML-аналитик знает 81 «курьера» (seed). Инструмен
 
 ## ⚡ Запуск
 
-**Требования:** Python 3.11 или 3.12, ~300 МБ диска, интернет не нужен (нужен только для опционального LLM).
+**Требования:** Python 3.11 или 3.12, ~300 МБ диска. Интернет не нужен (только для опционального LLM).
 
 ```bash
 pip install -r requirements.txt
-python pipeline.py --data data --out out      # ОДНА команда: raw .parquet -> 3 CSV (~30 с)
-streamlit run app.py                          # экран аналитика: http://localhost:8501
+python run.py
 ```
 
-Windows: `run.bat`, Linux/macOS: `bash run.sh`. Настройки Streamlit (`.streamlit/config.toml`) отключают интерактивный запрос e-mail при первом запуске. Оба скрипта ставят зависимости, прогоняют пайплайн и открывают UI.
+`run.py` — **одна команда** для всего решения:
+1. пайплайн `pipeline.py`: raw .parquet → 3 CSV + граф (~20–30 с, 8 автопроверок контрактов ТЗ);
+2. **MCP-сервер** `graph-intel` (Streamable HTTP, `http://127.0.0.1:8010/mcp`), отдельный процесс;
+3. **backend FastAPI + веб-интерфейс**: **http://localhost:8000** (браузер откроется сам), Swagger API: http://localhost:8000/docs.
+
+Только выгрузки (как в ТЗ): `python pipeline.py --data data --out out`. Пересчитать всё: `python run.py --rebuild`.
+Windows: `run.bat`, Linux/macOS: `bash run.sh`. Запасной интерфейс на Streamlit: `streamlit run app.py`.
 
 **Результат** в `out/`:
 
@@ -53,28 +58,42 @@ Windows: `run.bat`, Linux/macOS: `bash run.sh`. Настройки Streamlit (`.
 
 ```mermaid
 flowchart LR
-    A[edges / nodes / transactions .parquet] --> B[Метрики узлов<br/>степени, суммы, пропуск,<br/>PageRank, HITS, betweenness,<br/>near_seeds, быстрый транзит,<br/>синхронность, циклы]
-    B --> C[Модель P пересылает дальше<br/>для обрезанного 4-го колена]
-    B --> D[Правила ролей<br/>пороги + скор уверенности]
-    C --> D
-    D --> E[Louvain-кластеры<br/>+ гипотезы]
-    D --> F[Приоритет проверки<br/>взвешенная сумма]
-    E --> G[(3 CSV)]
-    F --> G
-    G --> H[graph_tools.py<br/>единый слой запросов к графу]
-    H --> I[Streamlit UI<br/>схема, карточка, стресс-тест]
-    H --> J[AI-аналитик<br/>LLM + tool calling]
-    H --> K[MCP-сервер graph-intel<br/>для любого AI-клиента]
+    A[edges / nodes / transactions .parquet] --> B[pipeline.py<br/>метрики, ML для 4-го колена,<br/>правила ролей, Louvain, приоритет]
+    B --> C[(out/: 3 CSV + graph.pkl<br/>+ run_meta.json)]
+    C --> T[graph_tools.py<br/>8 инструментов графа]
+    T --> M[MCP-сервер graph-intel<br/>:8010/mcp · 8 tools, 2 resources, 1 prompt]
+    W[Web UI<br/>граф, путь денег, стресс-тест, чат] <--> S[FastAPI backend :8000<br/>REST API + /docs]
+    S --> T
+    S --> AG[AI-агент<br/>LLM + tool calling]
+    AG -- MCP-клиент, tools/list + tools/call --> M
+    X[Claude Desktop / Cursor /<br/>бот банка] -. MCP .-> M
 ```
+
+**Как работает AI-агент:** получает список инструментов у MCP-сервера (`tools/list`), передаёт их LLM как функции,
+LLM сама решает, что вызвать, вызовы идут через MCP (`tools/call`), ответ содержит gid и цифры, найденные узлы
+подсвечиваются на графе. В интерфейсе видна каждая операция: `MCP · common_receivers · 37 мс`.
+Без `OPENAI_API_KEY` агент работает в режиме правил **на тех же MCP-инструментах**; если MCP-сервер не поднят,
+инструменты вызываются напрямую (помечается `direct`).
 
 | Файл | Роль |
 |---|---|
-| `pipeline.py` | детерминированный пайплайн: метрики → роли → кластеры → приоритет → CSV |
-| `graph_tools.py` | инструменты запросов к графу (node_info, neighbors, trace_money, common_receivers, top_nodes, cluster_info, simulate_removal, node_card) |
-| `app.py` | экран аналитика (Streamlit + pyvis + plotly) |
-| `agent.py` | AI-аналитик: вопрос → LLM сама вызывает инструменты → ответ с gid; fallback на правилах |
-| `mcp_server.py` | MCP-сервер с теми же инструментами (stdio / Streamable HTTP) |
+| `pipeline.py` | детерминированный пайплайн: метрики → роли → кластеры → приоритет → CSV + самопроверка |
+| `graph_tools.py` | инструменты графа: node_info, node_card, neighbors, trace_money, common_receivers, top_nodes, cluster_info, simulate_removal |
+| `mcp_server.py` | MCP-сервер graph-intel (FastMCP): те же инструменты по протоколу MCP (stdio / Streamable HTTP) |
+| `agent.py` | AI-агент: MCP-клиент + LLM function calling; fallback на правилах |
+| `server.py` | backend FastAPI: `/api/summary, /api/top, /api/search, /api/node/{gid}, /api/graph, /api/flow/{gid}, /api/clusters, /api/simulate, /api/ask, /api/health, /api/download` |
+| `web/` | фронтенд (HTML/CSS/JS, vis-network лежит локально в `web/vendor`, без CDN) |
+| `run.py` | запуск всего одной командой |
+| `app.py` | запасной интерфейс на Streamlit |
 | `starter/` | стартовый код организаторов (не изменялся) |
+
+### Веб-интерфейс
+- **Топ-сеть / Окружение / Кластер**: направленный граф, цвет = роль, ★ = seed, размер = приоритет, толщина = сумма.
+- **▶ Путь денег**: анимация, как деньги seed-клиентов по коленам (слева направо) доходят до узла и куда уходят дальше, с суммами на рёбрах.
+- **Карточка узла**: роль, уверенность, evidence, метрики, флаги, из чего сложился приоритет, контрагенты, переводы по датам.
+- **🤖 AI-аналитик**: чат, шаги агента с вызовами MCP-инструментов, подсветка найденных узлов.
+- **Стресс-тест**: «заблокировать топ-N», узлы гаснут на схеме, кривая «наш приоритет vs случайные узлы».
+- **Методика**: правила ролей, формула приоритета, метрики модели 4-го колена. Выгрузки CSV скачиваются из шапки.
 
 ---
 
@@ -160,21 +179,22 @@ Louvain (networkx, `seed=42`, детерминирован) на неориен�
 1. `python pipeline.py --data data --out out`: в консоли 7 шагов, `nodes_roles=2248, clusters=66, top_nodes=30`
    и строка **самопроверки контрактов ТЗ** (8 проверок: каждый gid один раз, роли из словаря, поля заполнены,
    evidence ≤ 200 символов, скоры в [0,1], согласованность cluster_id, топ ≥ 20 и по убыванию). При ошибке — код выхода 1.
-2. `streamlit run app.py` → вкладка **🎯 Топ-лист**: ранжированный список с обоснованием и карта всей сети.
-3. Слева введите любой gid → **🕸 Схема сети**: направленные потоки, цвет = роль, ★ = seed, толщина = сумма; **🪪 Карточка узла**.
-4. **🧩 Кластеры**: таблица с гипотезами и схема кластера.
-5. **💥 Стресс-тест**: ползунок «заблокировать топ-N» и сравнение со случайной блокировкой.
-6. **🤖 AI-аналитик**: кнопка «Кто собирает деньги с …» → агент вызывает `common_receivers`, ответ с gid и подсветкой на схеме.
-   Без ключа работает режим правил на тех же инструментах.
+2. `python run.py` → откроется http://localhost:8000. В шапке индикатор **MCP · 8 tools** (зелёный = агент работает через MCP).
+3. Слева топ-лист приоритетов; клик по узлу открывает **карточку** справа. Поиск по любому gid (можно часть номера).
+4. **▶ Путь денег** на узле №1: анимация потоков от seed-клиентов к координатору.
+5. Вкладка **Стресс-тест**: ползунок «заблокировать топ-N».
+6. Вкладка **🤖 AI-аналитик**: пример «Кто собирает деньги с …» → шаги `MCP · common_receivers`, `MCP · trace_money`, ответ с gid,
+   подсветка на графе. Без ключа работает режим правил на тех же MCP-инструментах.
+7. http://localhost:8000/docs: Swagger всех эндпоинтов.
 
-## 🔌 MCP-сервер (AI-интерфейс к графу расследования)
+## 🔌 MCP-сервер отдельно (AI-интерфейс к графу расследования)
 
 ```bash
 python mcp_server.py            # stdio
 python mcp_server.py --http     # http://127.0.0.1:8010/mcp  (проверка: npx @modelcontextprotocol/inspector)
 ```
 
-Tools: `node_info, neighbors, trace_money, common_receivers, top_nodes, cluster_info, simulate_removal`;
+Tools: `node_info, node_card, neighbors, trace_money, common_receivers, top_nodes, cluster_info, simulate_removal`;
 resources: `graph://methodology`, `graph://node/{gid}`; prompt: `investigate`.
 Пример для Claude Desktop / Cursor:
 
@@ -207,7 +227,8 @@ resources: `graph://methodology`, `graph://node/{gid}`; prompt: `investigate`.
 ## 🧰 Технологии и сторонние компоненты (п. 5.4.4)
 
 Python 3.11 · pandas · pyarrow · networkx (PageRank, HITS, betweenness, Louvain, simple_cycles) · scikit-learn
-(LogisticRegression) · Streamlit · pyvis (vis.js) · plotly · openai SDK (опционально) · MCP Python SDK < 2 (FastMCP).
+(LogisticRegression) · FastAPI · uvicorn · vis-network 9.1.2 (лежит в `web/vendor`, Apache-2.0/MIT) · MCP Python SDK 1.30 (FastMCP + клиент) ·
+openai SDK (опционально) · Streamlit + pyvis + plotly (запасной интерфейс).
 Стартовый код организаторов — `starter/` (без изменений, используется как эталон схемы выгрузок).
 
 **Заранее подготовленные компоненты (п. 5.4.4.2):** только окружение (Python, uv, MCP SDK) и общий опыт работы с MCP.

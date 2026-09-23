@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Граф денег · AML</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🕸</text></svg>">
+<link rel="stylesheet" href="vendor/vis-network.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">₸</div>
+    <div>
+      <div class="title">Граф денег</div>
+      <div class="subtitle">AML · кого проверять первым и почему</div>
+    </div>
+  </div>
+  <div class="kpis" id="kpis"></div>
+  <div class="status">
+    <span class="pill" id="pill-mcp"><i></i>MCP</span>
+    <span class="pill" id="pill-llm"><i></i>LLM</span>
+    <a class="pill link" href="/docs" target="_blank">API</a>
+    <div class="dl">
+      <button class="pill link">CSV ▾</button>
+      <div class="dl-menu">
+        <a href="/api/download/nodes_roles.csv">nodes_roles.csv</a>
+        <a href="/api/download/clusters.csv">clusters.csv</a>
+        <a href="/api/download/top_nodes.csv">top_nodes.csv</a>
+        <a href="/api/download/run_meta.json">run_meta.json</a>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- ЛЕВАЯ ПАНЕЛЬ -->
+  <aside class="left">
+    <div class="search">
+      <input id="search" placeholder="Поиск по gid (часть номера)…" autocomplete="off">
+      <div id="search-res" class="search-res"></div>
+    </div>
+    <div class="section-title">Приоритет проверки <span class="muted" id="top-count"></span></div>
+    <div id="toplist" class="toplist"></div>
+    <div class="legend" id="legend"></div>
+  </aside>
+
+  <!-- ЦЕНТР: ГРАФ -->
+  <section class="center">
+    <div class="toolbar">
+      <div class="seg" id="modes">
+        <button data-mode="top" class="active">Топ-сеть</button>
+        <button data-mode="ego">Окружение</button>
+        <button data-mode="cluster">Кластер</button>
+        <button data-mode="flow" class="accent">▶ Путь денег</button>
+      </div>
+      <div class="seg small" id="radius">
+        <span class="muted">радиус</span>
+        <button data-r="1" class="active">1</button><button data-r="2">2</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="icon" id="btn-fit" title="Вписать">⤢</button>
+    </div>
+    <div id="graph"></div>
+    <div class="graph-info" id="graph-info"></div>
+    <div class="flow-banner hidden" id="flow-banner"></div>
+    <div class="loader hidden" id="loader"><div class="spin"></div></div>
+  </section>
+
+  <!-- ПРАВАЯ ПАНЕЛЬ -->
+  <aside class="right">
+    <nav class="tabs" id="tabs">
+      <button data-tab="node" class="active">Узел</button>
+      <button data-tab="ai">🤖 AI-аналитик</button>
+      <button data-tab="clusters">Кластеры</button>
+      <button data-tab="stress">Стресс-тест</button>
+      <button data-tab="method">Методика</button>
+    </nav>
+    <div class="tab-body">
+      <div class="tab" id="tab-node"></div>
+
+      <div class="tab hidden" id="tab-ai">
+        <div class="ai-head">
+          <div class="muted small">Агент получает инструменты у <b>MCP-сервера graph-intel</b> и сам решает, какие вызвать.</div>
+          <div class="chips" id="examples"></div>
+        </div>
+        <div class="chat" id="chat"></div>
+        <form class="ask" id="ask-form">
+          <textarea id="ask-input" rows="2" placeholder="Спросите граф: «кто собирает деньги с …», «объясни роль …»"></textarea>
+          <button type="submit" class="primary">➤</button>
+        </form>
+      </div>
+
+      <div class="tab hidden" id="tab-clusters"><div id="clusters"></div></div>
+
+      <div class="tab hidden" id="tab-stress">
+        <h3>Что будет, если заблокировать ключевые узлы?</h3>
+        <div class="muted small">Узлы выбираются по приоритету (без seed) и гаснут на схеме. Метрика: сколько пар «seed → узел» остаётся достижимыми по цепочкам переводов.</div>
+        <div class="slider-row">
+          <input type="range" id="stress-n" min="0" max="50" value="10">
+          <b id="stress-n-val">10</b>
+        </div>
+        <div class="stress-kpis" id="stress-kpis"></div>
+        <div id="stress-chart"></div>
+      </div>
+
+      <div class="tab hidden" id="tab-method"><div id="method"></div></div>
+    </div>
+  </aside>
+</main>
+
+<script src="vendor/vis-network.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

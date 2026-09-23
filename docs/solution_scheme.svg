@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Граф денег — архитектура решения HackAlem</title>
+  <desc id="desc">Семь этапов от трёх Parquet до CSV. Ниже — FastAPI, веб-интерфейс, AI-агент, MCP-клиент и MCP-сервер. Показатели ML приведены по спецификации команды; восемь проверок обозначают число тестов, а не результат их запуска.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7dd3fc"/></marker>
+    <style>
+      text { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; }
+      .card { fill:#141d32; stroke:#34435e; stroke-width:1.5; }
+      .heading { fill:#f1f5f9; font-size:21px; font-weight:650; }
+      .body { fill:#cbd5e1; font-size:17px; }
+      .small { fill:#94a3b8; font-size:15px; }
+      .eyebrow { fill:#7dd3fc; font-size:14px; font-weight:650; letter-spacing:2px; }
+      .link { fill:none; stroke:#7dd3fc; stroke-width:2; marker-end:url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1600" height="900" fill="#0b1020"/>
+  <text x="40" y="42" class="eyebrow">HACKALEM / АНАЛИТИКА ГРАФА ПЕРЕВОДОВ</text>
+  <text x="40" y="98" fill="#f8fafc" font-size="43" font-weight="700">Граф денег</text>
+  <text x="362" y="96" fill="#94a3b8" font-size="23">Кого проверять первым — и почему</text>
+  <text x="40" y="140" class="eyebrow">01 — РАСЧЁТ И ОБЪЯСНИМЫЕ РЕЗУЛЬТАТЫ</text>
+
+  <rect x="40" y="165" width="200" height="325" rx="16" class="card"/>
+  <rect x="260" y="165" width="200" height="325" rx="16" class="card"/>
+  <rect x="480" y="165" width="200" height="325" rx="16" class="card"/>
+  <rect x="700" y="165" width="200" height="325" rx="16" class="card"/>
+  <rect x="920" y="165" width="200" height="325" rx="16" class="card"/>
+  <rect x="1140" y="165" width="200" height="325" rx="16" class="card"/>
+  <rect x="1360" y="165" width="200" height="325" rx="16" fill="#102d30" stroke="#2d7872" stroke-width="1.5"/>
+
+  <path class="link" d="M240 326 H258"/><path class="link" d="M460 326 H478"/>
+  <path class="link" d="M680 326 H698"/><path class="link" d="M900 326 H918"/>
+  <path class="link" d="M1120 326 H1138"/><path class="link" d="M1340 326 H1358"/>
+
+  <text x="58" y="198" class="eyebrow">ВХОД</text>
+  <text x="58" y="235" class="heading">3 parquet</text>
+  <text x="58" y="278" class="body">
+    <tspan x="58">2 248 узлов</tspan><tspan x="58" dy="31">3 119 рёбер</tspan><tspan x="58" dy="31">4 840 транзакций</tspan>
+  </text>
+  <text x="58" y="415" class="small"><tspan x="58">Направление,</tspan><tspan x="58" dy="23">суммы и даты</tspan></text>
+
+  <text x="278" y="198" class="eyebrow">ПРИЗНАКИ</text>
+  <text x="278" y="235" class="heading">Метрики</text>
+  <text x="278" y="269" class="body" style="font-size:16px">
+    <tspan x="278">Степени, суммы</tspan><tspan x="278" dy="24">pass-through</tspan>
+    <tspan x="278" dy="24">PageRank, HITS</tspan><tspan x="278" dy="24">betweenness</tspan>
+    <tspan x="278" dy="24">near_seeds</tspan><tspan x="278" dy="24">Быстрый транзит</tspan>
+    <tspan x="278" dy="24">≤2 дн</tspan><tspan x="278" dy="24">Синхронные</tspan>
+    <tspan x="278" dy="24">поступления, циклы</tspan>
+  </text>
+
+  <text x="498" y="198" class="eyebrow">ML-МОДЕЛЬ</text>
+  <text x="498" y="235" class="heading">P(пересылает</text><text x="498" y="264" class="heading">дальше)</text>
+  <text x="498" y="307" class="body"><tspan x="498">Для обрезанного</tspan><tspan x="498" dy="27">4-го колена</tspan></text>
+  <rect x="495" y="366" width="170" height="75" rx="10" fill="#21334f"/>
+  <text x="509" y="395" fill="#7dd3fc" font-size="20" font-weight="650">AUC 0.71</text>
+  <text x="509" y="422" class="body">граница 0.60</text>
+  <text x="498" y="470" class="small">Оценка, не факт</text>
+
+  <text x="718" y="198" class="eyebrow">РОЛИ</text>
+  <text x="718" y="235" class="heading">Правила ролей</text>
+  <text x="718" y="280" class="body"><tspan x="718">+ role_score</tspan><tspan x="718" dy="32">+ evidence</tspan><tspan x="718" dy="27">с цифрами</tspan></text>
+  <text x="718" y="414" class="small"><tspan x="718">Проверяемые</tspan><tspan x="718" dy="23">основания роли</tspan></text>
+
+  <text x="938" y="198" class="eyebrow">СООБЩЕСТВА</text>
+  <text x="938" y="235" class="heading">Louvain-</text><text x="938" y="264" class="heading">кластеры</text>
+  <text x="938" y="311" class="body">+ гипотезы</text>
+  <text x="938" y="390" class="small"><tspan x="938">Состав, seed,</tspan><tspan x="938" dy="23">внутренний оборот,</tspan><tspan x="938" dy="23">ключевые узлы</tspan></text>
+
+  <text x="1158" y="198" class="eyebrow">РАНЖИРОВАНИЕ</text>
+  <text x="1158" y="235" class="heading">Приоритет</text>
+  <text x="1158" y="282" class="body" style="font-size:16px">
+    <tspan x="1158">= 0.30 роль</tspan><tspan x="1158" dy="30">+ 0.25 близость</tspan><tspan x="1170" dy="23">к seed</tspan>
+    <tspan x="1158" dy="30">+ 0.20 оборот</tspan><tspan x="1158" dy="30">+ 0.15 PageRank</tspan><tspan x="1158" dy="30">+ 0.10 betweenness</tspan>
+  </text>
+
+  <text x="1378" y="198" class="eyebrow">ВЫХОД</text>
+  <text x="1378" y="235" class="heading">3 CSV</text>
+  <text x="1378" y="281" class="body" style="font-size:15px"><tspan x="1378">nodes_roles.csv</tspan><tspan x="1378" dy="29">clusters.csv</tspan><tspan x="1378" dy="29">top_nodes.csv</tspan></text>
+  <text x="1378" y="404" fill="#5eead4" font-size="21" font-weight="650">8 автопроверок</text>
+  <text x="1378" y="433" class="body">контрактов</text>
+
+  <path class="link" d="M1460 490 V531 H150 V616"/>
+  <rect x="641" y="514" width="318" height="30" rx="10" fill="#0b1020"/>
+  <text x="658" y="535" class="small">Результаты + граф и метрики узлов</text>
+  <text x="40" y="584" class="eyebrow">02 — ИНТЕРФЕЙС АНАЛИТИКА И ИНСТРУМЕНТЫ АГЕНТА</text>
+
+  <rect x="40" y="620" width="220" height="152" rx="16" class="card"/>
+  <text x="62" y="662" class="heading">FastAPI backend</text>
+  <text x="62" y="704" class="body"><tspan x="62">Доступ к графу</tspan><tspan x="62" dy="27">и результатам</tspan></text>
+  <path class="link" marker-start="url(#arrow)" d="M263 694 H288"/>
+
+  <rect x="290" y="620" width="330" height="152" rx="16" class="card"/>
+  <text x="312" y="662" class="heading">Web UI</text>
+  <text x="312" y="704" class="body"><tspan x="312">Граф, карточка узла,</tspan><tspan x="312" dy="27">путь денег, стресс-тест</tspan></text>
+
+  <rect x="650" y="620" width="270" height="152" rx="16" class="card"/>
+  <text x="672" y="662" class="heading">AI-агент</text>
+  <text x="672" y="704" class="body"><tspan x="672">LLM + tool calling</tspan><tspan x="672" dy="27">Ответ с опорой на граф</tspan></text>
+  <path class="link" d="M920 694 H948"/>
+
+  <rect x="950" y="620" width="220" height="152" rx="16" class="card"/>
+  <text x="972" y="662" class="heading">MCP-клиент</text>
+  <text x="972" y="704" class="body"><tspan x="972">Вызов предметных</tspan><tspan x="972" dy="27">инструментов</tspan></text>
+  <path class="link" d="M1170 694 H1198"/>
+
+  <rect x="1200" y="620" width="360" height="152" rx="16" class="card"/>
+  <text x="1222" y="662" class="heading">MCP-сервер graph-intel</text>
+  <text x="1222" y="704" fill="#7dd3fc" font-size="21" font-weight="650">7 инструментов</text>
+  <text x="1222" y="735" class="small">Узлы, связи и контекст анализа</text>
+
+  <line x1="40" y1="801" x2="1560" y2="801" stroke="#27344b"/>
+  <g font-size="17" fill="#cbd5e1">
+    <circle cx="50" cy="831" r="6" fill="#ef4444"/><text x="66" y="837">Координатор</text>
+    <circle cx="290" cy="831" r="6" fill="#f97316"/><text x="306" y="837">Консолидатор</text>
+    <circle cx="550" cy="831" r="6" fill="#a855f7"/><text x="566" y="837">Распределитель</text>
+    <circle cx="830" cy="831" r="6" fill="#3b82f6"/><text x="846" y="837">Транзит</text>
+    <circle cx="1030" cy="831" r="6" fill="#22c55e"/><text x="1046" y="837">Конечный получатель</text>
+    <circle cx="1350" cy="831" r="6" fill="#94a3b8"/><text x="1366" y="837">Периферия</text>
+  </g>
+  <text x="40" y="879" class="small" style="font-size:13px">Гипотезы для проверки. Показатели ML — по спецификации команды; 8 проверок — число тестов, не отметка об их прохождении.</text>
+</svg>

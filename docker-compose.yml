@@ -1,0 +1,12 @@
+services:
+  money-graph:
+    build: .
+    ports:
+      - "8000:8000"
+      - "8010:8010"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data:ro
+      - ./out:/app/out

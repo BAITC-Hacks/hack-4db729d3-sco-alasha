@@ -62,6 +62,12 @@ def simulate_removal(gids: list[str] | None = None, top_n: int = 10) -> dict:
     return T.simulate_removal(gids, top_n)
 
 
+@mcp.tool()
+def node_card(gid: str) -> str:
+    """Готовая справка по клиенту (markdown): роль, потоки, крупнейшие контрагенты, на что обратить внимание."""
+    return T.node_card(gid)
+
+
 @mcp.resource("graph://methodology")
 def methodology() -> str:
     """Пороги ролей, веса приоритета и параметры модели для 4-го колена."""
@@ -69,7 +75,7 @@ def methodology() -> str:
 
 
 @mcp.resource("graph://node/{gid}")
-def node_card(gid: str) -> str:
+def node_card_resource(gid: str) -> str:
     """Справка по клиенту в markdown — для запроса в правоохранительные органы / углублённой проверки."""
     return T.node_card(gid)
 
