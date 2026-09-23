@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import networkx as nx
@@ -19,7 +20,7 @@ import graph_tools as T
 
 st.set_page_config(page_title="Граф денег — AML", page_icon="🕸", layout="wide")
 
-OUT = Path(__file__).parent / "out"
+OUT = Path(os.getenv("OUT_DIR") or Path(__file__).parent / "out")
 if not (OUT / "graph.pkl").exists():
     st.error("Нет out/graph.pkl — сначала запустите:  python pipeline.py --data data --out out")
     st.stop()

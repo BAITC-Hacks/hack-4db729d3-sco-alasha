@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import os
 import pickle
 from functools import lru_cache
 from pathlib import Path
@@ -15,7 +16,8 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-OUT = Path(__file__).parent / "out"
+# папка с результатами пайплайна: OUT_DIR из окружения (run.py --out), по умолчанию out/ рядом с кодом
+OUT = Path(os.getenv("OUT_DIR") or Path(__file__).parent / "out").resolve()
 ROLE_RU = {"coordinator": "координатор", "consolidator": "точка консолидации",
            "distributor": "распределитель", "transit": "транзит",
            "terminal": "конечный получатель", "peripheral": "периферия"}
@@ -25,6 +27,19 @@ ROLE_RU = {"coordinator": "координатор", "consolidator": "точка 
 def state():
     with open(OUT / "graph.pkl", "rb") as f:
         return pickle.load(f)
+
+
+def max_depth() -> int:
+    """Колено, на котором обход оборван (максимальное depth в данных)."""
+    return int(DF().depth.max())
+
+
+def period() -> dict:
+    """Период выгрузки по датам транзакций."""
+    tx = state()["tx"]
+    if not len(tx):
+        return {"start": None, "end": None}
+    return {"start": tx.date.min().strftime("%Y-%m-%d"), "end": tx.date.max().strftime("%Y-%m-%d")}
 
 
 def G() -> nx.DiGraph:
@@ -225,8 +240,8 @@ def node_card(gid) -> str:
         flags.append(f"синхронные поступления: до {int(i['max_payers_same_day'])} плательщиков в один день")
     if i["cycles"]:
         flags.append(f"участвует в {int(i['cycles'])} циклах возврата средств (≤6 шагов)")
-    if i["depth"] == 4:
-        flags.append(f"4-е колено: исходящие не выгружены, модель оценивает P(пересылает дальше) = {i['p_forward']:.2f} — "
+    if i["depth"] == max_depth():
+        flags.append(f"{max_depth()}-е колено: исходящие не выгружены, модель оценивает P(пересылает дальше) = {i['p_forward']:.2f} — "
                      f"запросить выписку исходящих")
     if i["is_seed"]:
         flags.append("seed: входящие извне выборки не видны, соотношение отдал/получил некорректно")

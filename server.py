@@ -22,7 +22,6 @@ import agent
 import graph_tools as T
 
 ROOT = Path(__file__).parent
-OUT = ROOT / "out"
 COLORS = {"coordinator": "#ef4444", "consolidator": "#f97316", "distributor": "#a855f7",
           "transit": "#3b82f6", "terminal": "#22c55e", "peripheral": "#64748b"}
 
@@ -92,19 +91,20 @@ def graph_payload(nodes: set) -> dict:
 @app.get("/api/summary", tags=["обзор"])
 def summary():
     df = DF()
-    meta = json.loads((OUT / "run_meta.json").read_text(encoding="utf-8"))
+    meta = json.loads((T.OUT / "run_meta.json").read_text(encoding="utf-8"))
     return J({"nodes": len(df), "edges": G().number_of_edges(), "seeds": int(df.is_seed.sum()),
               "turnover": float(df.out_kzt.sum()), "roles": df.role.value_counts().to_dict(),
               "clusters": int(df.cluster_id.nunique()), "runtime_sec": meta["runtime_sec"],
               "colors": COLORS, "role_ru": T.ROLE_RU, "model": meta["forward_model"],
               "thresholds": meta["thresholds"], "role_weight": meta["role_weight"],
-              "depth4": {"total": int((df.depth == 4).sum()),
-                         "terminal": int(((df.depth == 4) & (df.role == "terminal")).sum())}})
+              "max_depth": T.max_depth(), "period": T.period(), "fallbacks": meta.get("fallbacks", []),
+              "depth4": {"total": int((df.depth == T.max_depth()).sum()),
+                         "terminal": int(((df.depth == T.max_depth()) & (df.role == "terminal")).sum())}})
 
 
 @app.get("/api/top", tags=["обзор"])
 def top(n: int = 30):
-    t = pd.read_csv(OUT / "top_nodes.csv")
+    t = pd.read_csv(T.OUT / "top_nodes.csv")
     rows = []
     for _, r in t.head(n).iterrows():
         rows.append({**node_payload(int(r.gid)), "rank": int(r["rank"]), "why": r.why})
@@ -241,12 +241,14 @@ def examples():
     top1 = df[~df.is_seed].priority_score.idxmax()
     rev = nx.single_source_shortest_path_length(Gr.reverse(copy=False), top1, cutoff=2)
     s3 = [str(g) for g in rev if df.at[g, "is_seed"]][:3]
-    d4 = df[(df.depth == 4) & (df.sub_role == "truncated_unknown")].in_kzt.idxmax()
-    return J([f"Кто собирает деньги с {' '.join(s3)}?",
-              "Кого из не-seed проверять первым и почему?",
-              f"Объясни роль {df.sort_values('priority_score', ascending=False).index[1]}",
-              "Что будет, если заблокировать топ-20?",
-              f"Почему у {d4} роль не определена?"])
+    unk = df[(df.depth == T.max_depth()) & (df.sub_role == "truncated_unknown")]
+    ex = [f"Кто собирает деньги с {' '.join(s3)}?" if s3 else "Кто собирает деньги с seed-клиентов?",
+          "Кого из не-seed проверять первым и почему?",
+          f"Объясни роль {df.sort_values('priority_score', ascending=False).index[min(1, len(df) - 1)]}",
+          "Что будет, если заблокировать топ-20?"]
+    if len(unk):
+        ex.append(f"Почему у {unk.in_kzt.idxmax()} роль не определена?")
+    return J(ex)
 
 
 @app.get("/api/health", tags=["служебное"])
@@ -261,7 +263,7 @@ async def health():
 def download(name: str):
     if name not in {"nodes_roles.csv", "clusters.csv", "top_nodes.csv", "run_meta.json", "data_requests.csv"}:
         raise HTTPException(404)
-    return FileResponse(OUT / name, filename=name)
+    return FileResponse(T.OUT / name, filename=name)
 
 
 app.mount("/", StaticFiles(directory=ROOT / "web", html=True), name="web")

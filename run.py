@@ -7,6 +7,7 @@
 
   python run.py                 # всё сразу
   python run.py --rebuild       # принудительно пересчитать пайплайн
+  python run.py --data my_data --out my_out   # своя выгрузка той же схемы (см. README «Запуск на своих данных»)
   python run.py --no-browser --host 0.0.0.0   # для docker / удалённой машины
 """
 from __future__ import annotations
@@ -22,6 +23,7 @@ import webbrowser
 from pathlib import Path
 
 ROOT = Path(__file__).parent
+CWD = Path.cwd()   # относительные --data/--out считаем от места запуска
 os.chdir(ROOT)
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -43,18 +45,23 @@ def main():
     ap.add_argument("--no-mcp", action="store_true")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--data", default="data", help="папка с edges/nodes/transactions.parquet")
+    ap.add_argument("--out", default="out", help="папка для результатов пайплайна")
     a = ap.parse_args()
 
-    pkl = ROOT / "out" / "graph.pkl"
-    sources = list((ROOT / "data").glob("*.parquet")) + [ROOT / "pipeline.py"]
+    data_dir, out_dir = (CWD / a.data).resolve(), (CWD / a.out).resolve()
+    # сервер, MCP и graph_tools читают результаты из OUT_DIR
+    os.environ["DATA_DIR"], os.environ["OUT_DIR"] = str(data_dir), str(out_dir)
+    pkl = out_dir / "graph.pkl"
+    sources = list(data_dir.glob("*.parquet")) + [ROOT / "pipeline.py"]
     stale = pkl.exists() and any(s.stat().st_mtime > pkl.stat().st_mtime for s in sources if s.exists())
     if stale:
         print("   данные или pipeline.py новее результатов — пересчитываю")
     if a.rebuild or stale or not pkl.exists():
-        print("== 1/3 пайплайн: data/*.parquet -> out/ ==")
-        subprocess.run([sys.executable, "pipeline.py", "--data", "data", "--out", "out"], check=True)
+        print(f"== 1/3 пайплайн: {data_dir}/*.parquet -> {out_dir}/ ==")
+        subprocess.run([sys.executable, "pipeline.py", "--data", str(data_dir), "--out", str(out_dir)], check=True)
     else:
-        print("== 1/3 пайплайн: out/ уже есть (пересчитать: python run.py --rebuild) ==")
+        print(f"== 1/3 пайплайн: {out_dir}/ уже есть (пересчитать: python run.py --rebuild) ==")
 
     mcp_proc = None
     if not a.no_mcp:

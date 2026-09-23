@@ -27,15 +27,21 @@ except ImportError:
 MCP_URL = os.getenv("MCP_URL", "http://127.0.0.1:8010/mcp")
 
 SYSTEM = (
-    "Ты — AI-ассистент AML-аналитика банка. Работаешь с графом внутрибанковских переводов (июль 2026), "
-    "собранным от 81 seed-клиента на 4 колена по исходящим переводам. Отвечай по-русски, кратко, по делу, в markdown. "
+    "Ты — AI-ассистент AML-аналитика банка. Работаешь с графом внутрибанковских переводов ({period}), "
+    "собранным от {seeds} seed-клиентов на {depth} колена по исходящим переводам. Отвечай по-русски, кратко, по делу, в markdown. "
     "Используй ТОЛЬКО данные из инструментов: никаких выдуманных фактов, связей и атрибутов клиентов. "
     "Всегда указывай gid полностью и цифры (суммы в ₸, число плательщиков/получателей, доли). "
     "Формулируй выводы как гипотезы для проверки («признаки консолидации»), а не как утверждение о виновности. "
     "Роли: coordinator (кандидат в организаторы), consolidator (сбор средств), distributor (веерная рассылка), "
     "transit (пропускает дальше), terminal (исходящих не наблюдается), peripheral. "
-    "Помни: у узлов 4-го колена исходящие не выгружены. В конце предложи следующий шаг проверки."
+    "Помни: у узлов {depth}-го колена исходящие не выгружены. В конце предложи следующий шаг проверки."
 )
+
+
+def system_prompt() -> str:
+    """Системный промпт с параметрами текущей выгрузки (период, число seed, глубина обхода)."""
+    p = T.period()
+    return SYSTEM.format(period=f"{p['start']} — {p['end']}", seeds=int(T.DF().is_seed.sum()), depth=T.max_depth())
 
 
 # ------------------------------------------------------------------ мост к инструментам: MCP или напрямую
@@ -196,7 +202,7 @@ async def _llm(question: str, tb: ToolBridge, max_steps: int = 6) -> dict:
     key = os.getenv("OPENAI_API_KEY") or os.getenv("NVIDIA_API_KEY")
     client = AsyncOpenAI(api_key=key, base_url=os.getenv("OPENAI_BASE_URL") or None, timeout=45)
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": question}]
+    msgs = [{"role": "system", "content": system_prompt()}, {"role": "user", "content": question}]
     steps = []
     for _ in range(max_steps):
         resp = await client.chat.completions.create(model=model, messages=msgs, tools=tb.openai_tools(), temperature=0)

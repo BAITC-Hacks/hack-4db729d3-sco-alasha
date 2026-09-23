@@ -31,6 +31,12 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 SEED = 42
+# Параметры конкретной выгрузки — вычисляются из данных в main() (set_dataset_params), здесь только значения по умолчанию
+MAX_DEPTH = 4          # колено, на котором обход оборван (максимальное depth в nodes)
+PERIOD = "за июль"     # подпись периода для текстов (по min/max дат транзакций)
+MONTHS_RU = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь",
+             "ноябрь", "декабрь"]
+
 ROLES = ["consolidator", "transit", "distributor", "terminal", "coordinator", "peripheral"]
 
 # ---------------------------------------------------------------- пороги (документированы в README)
@@ -77,6 +83,21 @@ def load(data_dir: Path):
     return edges, nodes, tx
 
 
+def set_dataset_params(nodes: pd.DataFrame, tx: pd.DataFrame) -> dict:
+    """Всё, что зависит от конкретной выгрузки: максимальное колено и период."""
+    global MAX_DEPTH, PERIOD
+    MAX_DEPTH = int(nodes.depth.max()) if len(nodes) else 0
+    if len(tx):
+        d0, d1 = tx.date.min(), tx.date.max()
+        PERIOD = (f"за {MONTHS_RU[d0.month - 1]}" if (d0.year, d0.month) == (d1.year, d1.month)
+                  else f"за {d0:%d.%m.%Y}–{d1:%d.%m.%Y}")
+        period = {"start": f"{d0:%Y-%m-%d}", "end": f"{d1:%Y-%m-%d}"}
+    else:
+        PERIOD, period = "за период выгрузки", {"start": None, "end": None}
+    return {"max_depth": MAX_DEPTH, "period": period, "period_label": PERIOD,
+            "n_nodes": int(len(nodes)), "n_seeds": int(nodes.is_seed.sum()), "n_transactions": int(len(tx))}
+
+
 def build_graph(edges: pd.DataFrame, nodes: pd.DataFrame) -> nx.DiGraph:
     G = nx.DiGraph()
     G.add_nodes_from(nodes.gid.tolist())          # включая 19 seed без рёбер
@@ -99,8 +120,8 @@ def structural_features(G: nx.DiGraph, nodes: pd.DataFrame) -> pd.DataFrame:
 
     # ЛОВУШКА 1: ребро всегда записано на колене (глубина плательщика + 1).
     # Значит исходящие узлов 0..3 колена собраны полностью, а у узлов 4-го колена не собраны вообще.
-    df["out_observed"] = df.depth < 4
-    df["truncated_by_depth"] = (df.depth == 4)
+    df["out_observed"] = df.depth < MAX_DEPTH
+    df["truncated_by_depth"] = (df.depth == MAX_DEPTH)
 
     df["pagerank"] = pd.Series(nx.pagerank(G, weight="sum_kzt"))
     hubs, auth = nx.hits(G, max_iter=500)
@@ -160,8 +181,10 @@ def temporal_features(df: pd.DataFrame, tx: pd.DataFrame, fast_days: int) -> pd.
     sync = inc.groupby(["gid", "date"]).src.nunique().groupby("gid").max()
     df["max_payers_same_day"] = sync
     df["active_days_in"] = inc.groupby("gid").date.nunique()
-    df["last_in_day"] = inc.groupby("gid").date.max().dt.day
-    df["first_in_day"] = inc.groupby("gid").date.min().dt.day
+    # номер дня от начала периода выгрузки (1 = первый день), а не день месяца — работает на любом периоде
+    day = (inc.date - tx.date.min()).dt.days + 1
+    df["last_in_day"] = day.groupby(inc.gid).max()
+    df["first_in_day"] = day.groupby(inc.gid).min()
     return df.fillna({"fast_transit_share": 0, "max_payers_same_day": 0, "active_days_in": 0,
                       "last_in_day": 0, "first_in_day": 0})
 
@@ -236,40 +259,68 @@ def forward_probability(df: pd.DataFrame) -> pd.DataFrame:
         "log_in_kzt": np.log1p(df.in_kzt), "in_deg": df.in_deg, "log_in_tx": np.log1p(df.in_tx),
         "log_avg_tx": np.log1p(df.avg_tx_in), "active_days_in": df.active_days_in, "last_in_day": df.last_in_day,
     }, index=df.index)
-    train = df.depth.between(1, 3) & ~df.is_seed & (df.in_deg > 0)
+    train = df.depth.between(1, MAX_DEPTH - 1) & ~df.is_seed & (df.in_deg > 0)
     y = (df.loc[train, "out_deg"] > 0).astype(int)
-    # честная проверка на отложенной выборке (25%): сначала разделение, стандартизация — только по train
+    fallback = []
     from sklearn.metrics import roc_auc_score
     from sklearn.model_selection import train_test_split
-    Xtr, Xte, ytr, yte = train_test_split(X[train], y, test_size=0.25, random_state=SEED, stratify=y)
-    m_tr, s_tr = Xtr.mean(), Xtr.std().replace(0, 1)
-    hold = LogisticRegression(max_iter=1000, random_state=SEED).fit((Xtr - m_tr) / s_tr, ytr)
-    auc = float(roc_auc_score(yte, hold.predict_proba((Xte - m_tr) / s_tr)[:, 1]))
-    base_auc = float(roc_auc_score(yte, Xte["in_deg"]))   # однофакторный бейзлайн: число плательщиков
-    # финальная модель — на всех узлах 1..3 колена
+
+    def safe_auc(yt, score):
+        return float(roc_auc_score(yt, score)) if len(yt) and yt.nunique() == 2 else None
+
+    def r3(x):
+        return None if x is None else round(x, 3)
+
+    # честная проверка на отложенной выборке (25%): сначала разделение, стандартизация — только по train
+    auc = base_auc = None
+    if len(y) >= 10 and y.value_counts().min() >= 2:
+        Xtr, Xte, ytr, yte = train_test_split(X[train], y, test_size=0.25, random_state=SEED, stratify=y)
+        m_tr, s_tr = Xtr.mean(), Xtr.std().replace(0, 1)
+        if ytr.nunique() == 2:
+            hold = LogisticRegression(max_iter=1000, random_state=SEED).fit((Xtr - m_tr) / s_tr, ytr)
+            auc = safe_auc(yte, hold.predict_proba((Xte - m_tr) / s_tr)[:, 1])
+        base_auc = safe_auc(yte, Xte["in_deg"])   # однофакторный бейзлайн: число плательщиков
+        holdout_size = int(len(yte))
+    else:
+        holdout_size = 0
+        fallback.append("holdout: мало узлов для отложенной выборки (<10 или <2 в классе)")
+    # финальная модель — на всех узлах 1..(MAX_DEPTH-1) колена
     mu, sd = X[train].mean(), X[train].std().replace(0, 1)
     Xs = (X[train] - mu) / sd
-    # проверка на "искусственной границе": обучение на коленах 1-2, прогноз для колена 3 только по входящим
-    # признакам и сравнение с наблюдаемыми исходящими 3-го колена — имитирует перенос на обрезанное 4-е колено
-    tr12 = train & df.depth.between(1, 2)
-    te3 = train & (df.depth == 3)
-    Xb = (X - X[tr12].mean()) / X[tr12].std().replace(0, 1)
+    # проверка на "искусственной границе": обучение на коленах 1..(MAX_DEPTH-2), прогноз для колена MAX_DEPTH-1
+    # только по входящим признакам — имитирует перенос на обрезанное последнее колено
+    tr12 = train & df.depth.between(1, MAX_DEPTH - 2)
+    te3 = train & (df.depth == MAX_DEPTH - 1)
     yb12, yb3 = (df.loc[tr12, "out_deg"] > 0).astype(int), (df.loc[te3, "out_deg"] > 0).astype(int)
-    bclf = LogisticRegression(max_iter=1000, random_state=SEED).fit(Xb[tr12], yb12)
-    boundary_auc = float(roc_auc_score(yb3, bclf.predict_proba(Xb[te3])[:, 1]))
-    boundary_base = float(roc_auc_score(yb3, X.loc[te3, "in_deg"]))
-    clf = LogisticRegression(max_iter=1000, random_state=SEED).fit(Xs, y)
-    df["p_forward"] = clf.predict_proba((X - mu) / sd)[:, 1]
+    boundary_auc = boundary_base = None
+    if yb12.nunique() == 2 and len(yb3):
+        Xb = (X - X[tr12].mean()) / X[tr12].std().replace(0, 1)
+        bclf = LogisticRegression(max_iter=1000, random_state=SEED).fit(Xb[tr12], yb12)
+        boundary_auc = safe_auc(yb3, bclf.predict_proba(Xb[te3])[:, 1])
+        boundary_base = safe_auc(yb3, X.loc[te3, "in_deg"])
+    else:
+        fallback.append("boundary test: недостаточно колен/классов")
+    if y.nunique() == 2 and len(y) >= 10:
+        clf = LogisticRegression(max_iter=1000, random_state=SEED).fit(Xs, y)
+        df["p_forward"] = clf.predict_proba((X - mu) / sd)[:, 1]
+        coef, intercept = dict(zip(feats, clf.coef_[0].round(3).tolist())), round(float(clf.intercept_[0]), 4)
+    else:
+        # фолбэк: модель не обучить — P(пересылает) = доля пересылающих среди наблюдаемых (или 0.5)
+        rate = float(y.mean()) if len(y) else 0.5
+        df["p_forward"] = rate
+        coef, intercept = {}, None
+        fallback.append(f"p_forward: модель не обучена ({len(y)} узлов, классов {y.nunique()}), константа {rate:.2f}")
     df.loc[df.out_observed, "p_forward"] = (df.loc[df.out_observed, "out_deg"] > 0).astype(float)
-    model_info = {"features": feats, "coef": dict(zip(feats, clf.coef_[0].round(3).tolist())),
-                  "train_size": int(train.sum()), "train_forward_rate": float(y.mean()),
-                  "holdout_auc": round(auc, 3), "baseline_auc_in_deg_only": round(base_auc, 3),
-                  "holdout_size": int(len(yte)),
-                  "boundary_test_train_depth_1_2_test_depth_3_auc": round(boundary_auc, 3),
-                  "boundary_test_baseline_auc": round(boundary_base, 3),
-                  "boundary_test_size": int(te3.sum()), "boundary_test_forward_rate": round(float(yb3.mean()), 3),
+    model_info = {"features": feats, "coef": coef,
+                  "train_size": int(train.sum()), "train_forward_rate": float(y.mean()) if len(y) else None,
+                  "holdout_auc": r3(auc), "baseline_auc_in_deg_only": r3(base_auc),
+                  "holdout_size": holdout_size,
+                  "boundary_test_train_depth_1_2_test_depth_3_auc": r3(boundary_auc),
+                  "boundary_test_baseline_auc": r3(boundary_base),
+                  "boundary_test_size": int(te3.sum()),
+                  "boundary_test_forward_rate": round(float(yb3.mean()), 3) if len(yb3) else None,
                   "scaler_mean": mu.round(4).to_dict(), "scaler_std": sd.round(4).to_dict(),
-                  "intercept": round(float(clf.intercept_[0]), 4)}
+                  "intercept": intercept, "fallbacks": fallback}
     return df, model_info
 
 
@@ -302,7 +353,7 @@ def assign_roles(G: nx.DiGraph, df: pd.DataFrame, T: dict) -> pd.DataFrame:
             if r.is_seed:
                 s *= 0.8
             fwd = (f"дальше {min(pt, 9.99) * 100:.0f}% полученного" if r.out_observed
-                   else f"исходящие не видны (4 колено), P(пересылает)={r.p_forward:.2f}")
+                   else f"исходящие не видны ({MAX_DEPTH} колено), P(пересылает)={r.p_forward:.2f}")
             cand["consolidator"] = (clip01(s), f"признаки консолидации: получает от {int(r.in_deg)} плательщиков "
                                                f"({int(r.seed_payers)} seed) {fmt_kzt(r.in_kzt)} ₸, {fwd}")
 
@@ -324,7 +375,7 @@ def assign_roles(G: nx.DiGraph, df: pd.DataFrame, T: dict) -> pd.DataFrame:
             elif r.p_forward < T["terminal_fwd_prob_max"]:
                 s = 0.35 + 0.4 * (1 - r.p_forward)
                 cand["terminal"] = (clip01(s), f"вероятный конечный получатель: {fmt_kzt(r.in_kzt)} ₸ от {int(r.in_deg)}; "
-                                               f"4 колено, исходящие не собраны, P(пересылает)={r.p_forward:.2f}")
+                                               f"{MAX_DEPTH} колено, исходящие не собраны, P(пересылает)={r.p_forward:.2f}")
                 sub[g] = "likely_sink_truncated"
             else:
                 sub[g] = "truncated_unknown"
@@ -338,11 +389,11 @@ def assign_roles(G: nx.DiGraph, df: pd.DataFrame, T: dict) -> pd.DataFrame:
             roles[g] = "peripheral"
             if sub.get(g) == "truncated_small":
                 scores[g] = 0.75
-                evid[g] = (f"4 колено (исходящие не выгружены): разовое поступление {fmt_kzt(r.in_kzt)} ₸ от 1 плательщика, "
+                evid[g] = (f"{MAX_DEPTH} колено (исходящие не выгружены): разовое поступление {fmt_kzt(r.in_kzt)} ₸ от 1 плательщика, "
                            f"P(пересылает)={r.p_forward:.2f} — признаков роли нет")
-            elif r.depth == 4 and r.in_deg >= 1:
+            elif r.depth == MAX_DEPTH and r.in_deg >= 1:
                 scores[g] = clip01(0.5 + 0.3 * abs(r.p_forward - 0.5))
-                evid[g] = (f"4 колено, обход оборван: исходящие не видны, P(пересылает)={r.p_forward:.2f} — "
+                evid[g] = (f"{MAX_DEPTH} колено, обход оборван: исходящие не видны, P(пересылает)={r.p_forward:.2f} — "
                            f"роль не определить, получил {fmt_kzt(r.in_kzt)} ₸")
             elif sub.get(g) == "small_receiver" and r.out_observed:
                 scores[g] = 0.85
@@ -350,7 +401,7 @@ def assign_roles(G: nx.DiGraph, df: pd.DataFrame, T: dict) -> pd.DataFrame:
                            f"исходящих в выборке не наблюдается — признаков роли нет")
             elif r.in_deg == 0 and r.out_deg == 0:
                 scores[g] = 0.9
-                evid[g] = "seed без переводов ≥5 тыс ₸ внутри банка за июль — связей в выгрузке нет"
+                evid[g] = f"seed без переводов ≥5 тыс ₸ внутри банка {PERIOD} — связей в выгрузке нет"
             elif r.is_seed:
                 scores[g] = 0.7
                 evid[g] = (f"seed: отправил {fmt_kzt(r.out_kzt)} ₸ {int(r.out_deg)} получателям; "
@@ -491,16 +542,16 @@ def data_requests(df: pd.DataFrame, T: dict) -> pd.DataFrame:
     rows = []
     for g, r in df.iterrows():
         requests = []
-        if r.depth == 4 and r.in_deg >= 1 and (r.p_forward >= T["terminal_fwd_prob_max"] or r.in_kzt >= T["data_request_min_kzt"]):
-            requests.append(("выписка исходящих переводов за июль",
-                             f"4-е колено: вход {fmt_kzt(r.in_kzt)} ₸, P(пересылает)={r.p_forward:.2f}; исходящие не выгружены"))
+        if r.depth == MAX_DEPTH and r.in_deg >= 1 and (r.p_forward >= T["terminal_fwd_prob_max"] or r.in_kzt >= T["data_request_min_kzt"]):
+            requests.append((f"выписка исходящих переводов {PERIOD}",
+                             f"{MAX_DEPTH}-е колено: вход {fmt_kzt(r.in_kzt)} ₸, P(пересылает)={r.p_forward:.2f}; исходящие не выгружены"))
         if r.is_seed and r.out_kzt >= T["data_request_min_kzt"]:
             requests.append(("входящие поступления из-за пределов выборки",
                              f"seed: отправил {fmt_kzt(r.out_kzt)} ₸, входящие из-за пределов выборки не видны"))
         if r.structuring_flag:
             requests.append(("переводы ниже 5 000 ₸ и межбанковские за тот же период",
                              f"признаки дробления: {r.small_tx_share:.0%} из {int(r.in_tx)} входящих переводов от 5 до 10 тыс ₸"))
-        if (r.role in ("consolidator", "coordinator") and not r.is_seed and r.depth < 4
+        if (r.role in ("consolidator", "coordinator") and not r.is_seed and r.depth < MAX_DEPTH
                 and (pd.isna(r.pass_through) or r.pass_through < T["data_request_max_pass_through"])):
             onward = "доля дальнейших переводов неизвестна" if pd.isna(r.pass_through) else f"дальше ушло лишь {r.pass_through:.0%}"
             requests.append(("межбанковские переводы и снятие наличных",
@@ -566,6 +617,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     edges, nodes, tx = load(Path(a.data))
+    dataset = set_dataset_params(nodes, tx)
     G = build_graph(edges, nodes)
     print(f"[1/7] граф: {G.number_of_nodes()} узлов, {G.number_of_edges()} рёбер")
 
@@ -576,7 +628,7 @@ def main():
     print(f"[2/7] метрики посчитаны ({time.time() - t0:.1f}s)")
 
     df, model_info = forward_probability(df)
-    print(f"[3/7] модель P(пересылает дальше) для 4-го колена: обучена на {model_info['train_size']} узлах, "
+    print(f"[3/7] модель P(пересылает дальше) для {MAX_DEPTH}-го колена: обучена на {model_info['train_size']} узлах, "
           f"AUC на отложенной выборке {model_info['holdout_auc']} (бейзлайн по числу плательщиков "
           f"{model_info['baseline_auc_in_deg_only']}); граница 1-2 -> 3: AUC "
           f"{model_info['boundary_test_train_depth_1_2_test_depth_3_auc']}")
@@ -629,7 +681,7 @@ def main():
     pos = nx.spring_layout(G.to_undirected(), seed=SEED, k=0.08, iterations=60)
     with open(out / "graph.pkl", "wb") as f:
         pickle.dump({"G": G, "df": df, "tx": tx, "pos": pos, "clusters": ct}, f)
-    meta = {"thresholds": THRESHOLDS, "role_weight": ROLE_WEIGHT, "forward_model": model_info,
+    meta = {"dataset": dataset, "fallbacks": model_info["fallbacks"], "thresholds": THRESHOLDS, "role_weight": ROLE_WEIGHT, "forward_model": model_info,
             "resilience": res, "extras": extras, "runtime_sec": round(time.time() - t0, 1)}
     (out / "run_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2, default=float), encoding="utf-8")
     print(f"[7/7] готово за {time.time() - t0:.1f}s, выгрузки в {out}/")

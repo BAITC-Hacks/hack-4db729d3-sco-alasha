@@ -266,7 +266,7 @@ function renderNode(d) {
   if (i.fast_transit_share >= .5) flags.push(`${Math.round(i.fast_transit_share * 100)}% исходящих ушло в течение 2 дней после поступления.`);
   if (i.max_payers_same_day >= 3) flags.push(`До ${i.max_payers_same_day} плательщиков в один день.`);
   if (i.cycles) flags.push(`Участвует в ${i.cycles} циклах (до 6 шагов).`);
-  if (n.depth === 4) flags.push(`Исходящие 4-го колена не выгружены. P(пересылает) = ${i.p_forward.toFixed(2)}. Запросите выписку.`);
+  if (n.depth === S.summary.max_depth) flags.push(`Исходящие ${S.summary.max_depth}-го колена не выгружены. P(пересылает) = ${i.p_forward.toFixed(2)}. Запросите выписку.`);
   if (n.seed) flags.push("Исходный клиент: входящие извне выборки не видны, отношение выхода к входу неполно.");
   const prioNames = {role:"Роль × уверенность",reach:"Близость к seed",money:"Оборот",pagerank:"PageRank",betw:"Посредничество"};
   const prioW = {role:.30,reach:.25,money:.20,pagerank:.15,betw:.10};
@@ -286,7 +286,7 @@ function renderNode(d) {
     ${disclosure("Из чего сложился приоритет", "", Object.keys(prioNames).map(k => `<div class="hbar"><span>${prioNames[k]} ×${prioW[k]}</span><div class="t"><div style="width:${d.prio[k]*100}%"></div></div><span>${d.prio[k].toFixed(2)}</span></div>`).join(""))}
     ${disclosure("Кто переводил деньги", i.in_deg, peers(d.neighbors.payers, "←"))}
     ${disclosure("Кому переводил деньги", i.out_deg, peers(d.neighbors.receivers, "→"))}
-    ${disclosure("Переводы по датам", "Июль 2026", txChart(d.tx))}
+    ${disclosure("Переводы по датам", periodLabel(), txChart(d.tx))}
     <div class="disclaimer">Гипотеза для углублённой проверки, не вывод о виновности.</div>`;
   $("#btn-flow").onclick = () => handle(setMode("flow"));
   $("#btn-ego").onclick = () => handle(setMode("ego"));
@@ -295,17 +295,32 @@ function renderNode(d) {
 }
 
 
+// «Июль 2026» для периода в пределах месяца, иначе «01.07.2026 – 15.08.2026»
+function periodLabel() {
+  const p = (S.summary && S.summary.period) || {};
+  if (!p.start) return "—";
+  const a = new Date(p.start + "T00:00:00Z"), b = new Date(p.end + "T00:00:00Z"), f = (d) => d.toLocaleDateString("ru-RU", { timeZone: "UTC" });
+  if (a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth()) {
+    const m = a.toLocaleDateString("ru-RU", { month: "long", year: "numeric", timeZone: "UTC" }).replace(" г.", "");
+    return m[0].toUpperCase() + m.slice(1);
+  }
+  return `${f(a)} – ${f(b)}`;
+}
+
 function txChart(tx) {
   if (!tx.length) return '<div class="muted small">нет переводов</div>';
-  const W = 400, H = 90, byDay = {};
-  tx.forEach((t) => { const d = +t.date.slice(8, 10); byDay[d] = byDay[d] || { in: 0, out: 0 }; byDay[d][t.dir] += t.sum; });
+  // ось — дни периода выгрузки (из /api/summary), а не фиксированный месяц
+  const W = 400, H = 90, byDay = {}, DAY = 864e5, p = S.summary.period || {};
+  const t0 = Date.parse(p.start || tx[0].date), nDays = Math.max(1, Math.round((Date.parse(p.end || tx[tx.length - 1].date) - t0) / DAY) + 1);
+  tx.forEach((t) => { const d = Math.round((Date.parse(t.date) - t0) / DAY) + 1; byDay[d] = byDay[d] || { in: 0, out: 0 }; byDay[d][t.dir] += t.sum; });
   const mx = Math.max(...Object.values(byDay).map((v) => Math.max(v.in, v.out)));
+  const bw = Math.max(1, Math.min(8, (W - 12) / nDays - 1)), dayName = (d) => new Date(t0 + (d - 1) * DAY).toLocaleDateString("ru-RU", { day: "numeric", month: "long", timeZone: "UTC" });
   let bars = "";
-  for (let d = 1; d <= 31; d++) {
-    const x = 6 + (d - 1) * ((W - 12) / 31), v = byDay[d] || { in: 0, out: 0 }, hi = (v.in / mx) * 38, ho = (v.out / mx) * 38;
-    if (v.in) bars += `<rect x="${x}" y="${45 - hi}" width="8" height="${hi}" fill="#79a48d"><title>${d} июля: вход ${fmtKZT(v.in)}</title></rect>`;
-    if (v.out) bars += `<rect x="${x}" y="45" width="8" height="${ho}" fill="#c48980"><title>${d} июля: выход ${fmtKZT(v.out)}</title></rect>`;
-    if (d % 5 === 1) bars += `<text x="${x}" y="${H}" fill="#83968a" font-size="9">${d}</text>`;
+  for (let d = 1; d <= nDays; d++) {
+    const x = 6 + (d - 1) * ((W - 12) / nDays), v = byDay[d] || { in: 0, out: 0 }, hi = (v.in / mx) * 38, ho = (v.out / mx) * 38;
+    if (v.in) bars += `<rect x="${x}" y="${45 - hi}" width="${bw}" height="${hi}" fill="#79a48d"><title>${dayName(d)}: вход ${fmtKZT(v.in)}</title></rect>`;
+    if (v.out) bars += `<rect x="${x}" y="45" width="${bw}" height="${ho}" fill="#c48980"><title>${dayName(d)}: выход ${fmtKZT(v.out)}</title></rect>`;
+    if ((d - 1) % Math.max(5, Math.ceil(nDays / 7)) === 0) bars += `<text x="${x}" y="${H}" fill="#83968a" font-size="9">${new Date(t0 + (d - 1) * DAY).getUTCDate()}</text>`;
   }
   return `<svg class="transaction-chart" viewBox="0 0 ${W} ${H + 2}"><line x1="0" y1="45" x2="${W}" y2="45" stroke="#e3ebe5"/>${bars}</svg>
     <div class="muted small"><span style="color:#79a48d">■</span> вход &nbsp; <span style="color:#c48980">■</span> выход · ${tx.length} переводов</div>`;
@@ -405,19 +420,19 @@ function renderMethod() {
       <tr><td>${roleBadge("distributor")}</td><td>≥ ${t.distributor_min_receivers} разных получателей</td></tr>
       <tr><td>${roleBadge("consolidator")}</td><td>≥ ${t.consolidator_min_payers} разных плательщиков; скор растёт с числом плательщиков и долей удержанного</td></tr>
       <tr><td>${roleBadge("transit")}</td><td>вход и выход, out/in ∈ [${t.transit_pt_low}; ${t.transit_pt_high}], не seed; бонус за уход ≤ ${t.transit_fast_days} дн.</td></tr>
-      <tr><td>${roleBadge("terminal")}</td><td>исходящих нет и (≥ 2 плательщиков или ≥ ${fmtKZT(t.terminal_min_kzt)}); для 4-го колена только при P(пересылает) &lt; ${t.terminal_fwd_prob_max}</td></tr>
+      <tr><td>${roleBadge("terminal")}</td><td>исходящих нет и (≥ 2 плательщиков или ≥ ${fmtKZT(t.terminal_min_kzt)}); для ${s.max_depth}-го колена только при P(пересылает) &lt; ${t.terminal_fwd_prob_max}</td></tr>
       <tr><td>${roleBadge("coordinator")}</td><td>не seed; деньги ≥ ${t.coordinator_min_near_seeds} seed за ≤ 2 перевода; ≥ 1 посредник на входе, ≥ ${t.coordinator_min_role_payers} связей с посредниками; вход ≥ ${t.coordinator_min_in_kzt_pct * 100}-го перцентиля</td></tr>
       <tr><td>${roleBadge("peripheral")}</td><td>ни одно правило не сработало</td></tr>
     </table>
     <h3>Приоритет проверки</h3>
     <div class="evidence">0.30·роль×уверенность + 0.25·близость к seed + 0.20·оборот + 0.15·PageRank + 0.10·посредничество; seed ×0.6 (они уже известны — фокус на тех, кто выше)</div>
-    <h3>Ловушка: обрыв на 4-м колене</h3>
-    <div class="small">Ребро всегда записано на колене плательщика + 1: исходящие колен 0–3 собраны полностью, у 4-го — нет вообще (${s.depth4.total} узлов). Логистическая регрессия обучена на ${m.train_size} узлах колен 1–3 по входящему поведению.</div>
+    <h3>Ловушка: обрыв на ${s.max_depth}-м колене</h3>
+    <div class="small">Ребро всегда записано на колене плательщика + 1: исходящие колен 0–${s.max_depth - 1} собраны полностью, у ${s.max_depth}-го — нет вообще (${s.depth4.total} узлов). Логистическая регрессия обучена на ${m.train_size} узлах колен 1–${s.max_depth - 1} по входящему поведению.</div>
     <div class="grid">
-      <div class="metric"><b>${m.holdout_auc}</b><span>AUC, отложенная выборка (бейзлайн ${m.baseline_auc_in_deg_only})</span></div>
-      <div class="metric"><b>${m.boundary_test_train_depth_1_2_test_depth_3_auc}</b><span>AUC, граница 1–2 → 3 (бейзлайн ${m.boundary_test_baseline_auc})</span></div>
+      <div class="metric"><b>${m.holdout_auc ?? "—"}</b><span>AUC, отложенная выборка (бейзлайн ${m.baseline_auc_in_deg_only})</span></div>
+      <div class="metric"><b>${m.boundary_test_train_depth_1_2_test_depth_3_auc ?? "—"}</b><span>AUC, граница 1–${s.max_depth - 2} → ${s.max_depth - 1} (бейзлайн ${m.boundary_test_baseline_auc})</span></div>
     </div>
-    <div class="small muted">Перенос между коленами слабый, поэтому порог консервативный: terminal только ${s.depth4.terminal} из ${s.depth4.total} узлов 4-го колена, остальные честно помечены как неопределённые.</div>
+    <div class="small muted">Перенос между коленами слабый, поэтому порог консервативный: terminal только ${s.depth4.terminal} из ${s.depth4.total} узлов ${s.max_depth}-го колена, остальные честно помечены как неопределённые.</div>
     <h3 style="margin-top:14px">Дробление и аномальные профили</h3>
     <div class="small">Признаки дробления: не менее ${t.structuring_min_tx} входящих переводов, из них ≥ ${t.structuring_share * 100}% на сумму 5 000–9 999,99 ₸. IsolationForest выделяет верхние ${t.anomaly_top_share * 100}% активных узлов после нормировки признаков внутри колена. Объяснение — наибольшее отклонение признака; это сигнал для проверки.</div>
     <h3 style="margin-top:14px">Оценка полноты: какие данные запросить</h3>
@@ -515,6 +530,7 @@ async function start() {
  S.summary=await api("/api/summary");
  S.summary.colors=COLORS;
  const s=S.summary;
+ $("#period-label").textContent=periodLabel();
  const kpi=(name,value,label,note)=>`<div class="kpi"><span class="kpi-icon">${icon(name)}</span><div><div class="kpi-label">${label}</div><b>${value}</b><small>${note}</small></div></div>`;
  $("#kpis").innerHTML=kpi("users",fmtN(s.nodes),"Участников сети",`${s.seeds} исходный клиент · seed`)+
   kpi("money",`${(s.turnover/1e6).toFixed(0)} <span class="unit">млн ₸</span>`,"Общий оборот",`${fmtN(s.edges)} связей между клиентами`)+
