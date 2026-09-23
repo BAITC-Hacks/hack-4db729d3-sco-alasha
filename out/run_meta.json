@@ -53,17 +53,17 @@
       "seed_reach_pairs": 11696
     },
     "top10": {
-      "largest_component": 1715,
-      "edges": 2895,
-      "flow_kzt": 328160864.1,
-      "seed_reach_pairs": 8648
+      "largest_component": 1726,
+      "edges": 2898,
+      "flow_kzt": 329159267.1,
+      "seed_reach_pairs": 8699
     },
     "top20": {
-      "largest_component": 1557,
-      "edges": 2526,
-      "flow_kzt": 302561790.1500001,
-      "seed_reach_pairs": 6531
+      "largest_component": 1562,
+      "edges": 2530,
+      "flow_kzt": 302027127.1500001,
+      "seed_reach_pairs": 6553
     }
   },
-  "runtime_sec": 19.7
+  "runtime_sec": 18.9
 }

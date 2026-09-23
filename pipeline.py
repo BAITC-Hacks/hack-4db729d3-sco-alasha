@@ -225,7 +225,7 @@ def assign_roles(G: nx.DiGraph, df: pd.DataFrame, T: dict) -> pd.DataFrame:
 
         big_enough = r.in_deg >= 2 or r.in_kzt >= T["terminal_min_kzt"]
         if r.in_deg >= 1 and r.out_deg == 0 and not big_enough:
-            sub[g] = "small_receiver"
+            sub[g] = "small_receiver" if r.out_observed else "truncated_small"
         if r.in_deg >= 1 and r.out_deg == 0 and big_enough:
             if r.out_observed:
                 s = 0.6 + 0.2 * min(r.in_deg / 4, 1) + 0.2 * min(np.log1p(r.in_kzt) / np.log1p(1e6), 1)
@@ -240,12 +240,18 @@ def assign_roles(G: nx.DiGraph, df: pd.DataFrame, T: dict) -> pd.DataFrame:
             else:
                 sub[g] = "truncated_unknown"
 
+        if "consolidator" in cand and "terminal" in cand:
+            cand.pop("terminal")          # собрал от >= 4 и оставил у себя — это консолидация, а не просто сток
         if cand:
             best = max(cand, key=lambda k: cand[k][0])
             roles[g], scores[g], evid[g] = best, cand[best][0], cand[best][1]
         else:
             roles[g] = "peripheral"
-            if r.depth == 4 and r.in_deg >= 1:
+            if sub.get(g) == "truncated_small":
+                scores[g] = 0.75
+                evid[g] = (f"4 колено (исходящие не выгружены): разовое поступление {fmt_kzt(r.in_kzt)} ₸ от 1 плательщика, "
+                           f"P(пересылает)={r.p_forward:.2f} — признаков роли нет")
+            elif r.depth == 4 and r.in_deg >= 1:
                 scores[g] = clip01(0.5 + 0.3 * abs(r.p_forward - 0.5))
                 evid[g] = (f"4 колено, обход оборван: исходящие не видны, P(пересылает)={r.p_forward:.2f} — "
                            f"роль не определить, получил {fmt_kzt(r.in_kzt)} ₸")
