@@ -1,0 +1,50 @@
+flowchart TB
+    P[("📦 edges / nodes / transactions .parquet<br/>2 248 узлов · 3 119 рёбер · 4 840 переводов")]
+
+    subgraph CORE["⚙️ ЯДРО — pipeline.py · детерминированно, без LLM, ~20 с"]
+        direction LR
+        M["Метрики<br/>степени · суммы · pass-through<br/>PageRank · HITS · betweenness<br/>near_seeds · быстрый транзит · циклы"]
+        ML["ML-модель 4-го колена<br/>P(пересылает дальше)<br/>AUC 0.71"]
+        R["Правила ролей<br/>role_score + evidence"]
+        C["Louvain-кластеры<br/>+ гипотезы"]
+        PR["Приоритет<br/>проверки"]
+        M --> ML --> R --> C --> PR
+    end
+
+    O[("📄 nodes_roles.csv · clusters.csv · top_nodes.csv<br/>✔ самопроверка 8 контрактов ТЗ")]
+
+    subgraph AI["🤖 AI-СЛОЙ"]
+        direction LR
+        T["graph_tools.py<br/>8 инструментов графа"]
+        MCP["MCP-сервер graph-intel<br/>:8010/mcp<br/>8 tools · 2 resources · 1 prompt"]
+        AG["AI-агент<br/>LLM + tool calling<br/>fallback: правила"]
+        T --> MCP
+        AG -- "MCP-клиент<br/>tools/list · tools/call" --> MCP
+    end
+
+    subgraph APP["🖥 ПРИЛОЖЕНИЕ"]
+        direction LR
+        UI["Web UI<br/>граф · ▶ путь денег · карточка узла<br/>стресс-тест · AI-чат"]
+        API["FastAPI backend :8000<br/>REST API · Swagger /docs"]
+        UI <--> API
+    end
+
+    EXT["Claude Desktop / Cursor / бот банка"]
+
+    P --> CORE
+    CORE --> O
+    O --> T
+    API --> T
+    API --> AG
+    EXT -. MCP .-> MCP
+
+    classDef data fill:#0f172a,stroke:#38bdf8,color:#e2e8f0
+    classDef core fill:#1c1917,stroke:#f97316,color:#fde68a
+    classDef ai fill:#1e1b4b,stroke:#a855f7,color:#e9d5ff
+    classDef app fill:#052e16,stroke:#22c55e,color:#dcfce7
+    classDef ext fill:#111827,stroke:#64748b,color:#cbd5e1,stroke-dasharray:4 3
+    class P,O data
+    class M,ML,R,C,PR core
+    class T,MCP,AG ai
+    class API,UI app
+    class EXT ext
