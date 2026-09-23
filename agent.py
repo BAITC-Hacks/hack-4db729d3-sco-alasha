@@ -25,6 +25,8 @@ except ImportError:
     pass
 
 MCP_URL = os.getenv("MCP_URL", "http://127.0.0.1:8010/mcp")
+# False, когда сервер переключён на загруженную выгрузку: MCP-процесс держит исходную, поэтому вызываем напрямую
+USE_MCP = True
 
 SYSTEM = (
     "Ты — AI-ассистент AML-аналитика банка. Работаешь с графом внутрибанковских переводов ({period}), "
@@ -69,6 +71,8 @@ class ToolBridge:
     async def __aenter__(self):
         from contextlib import AsyncExitStack
         self._stack = AsyncExitStack()
+        if not USE_MCP:
+            return self
         try:
             from mcp import ClientSession
             from mcp.client.streamable_http import streamablehttp_client

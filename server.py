@@ -6,14 +6,18 @@ Backend «Граф денег» (FastAPI).  REST API для веб-интерф�
 """
 from __future__ import annotations
 
+import io
 import json
+import subprocess
+import sys
+import time
 from functools import lru_cache
 from pathlib import Path
 
 import networkx as nx
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -22,6 +26,14 @@ import agent
 import graph_tools as T
 
 ROOT = Path(__file__).parent
+DEFAULT_OUT = T.OUT
+UPLOADS = ROOT / "uploads"
+# загрузка принимает ТОЛЬКО исходную схему транзакций: ровно эти файлы и ровно эти колонки
+# (никаких ФИО, адресов, координат — ТЗ запрещает обогащение атрибутов клиентов)
+SCHEMA = {"nodes.parquet": ["gid", "depth", "is_seed"],
+          "edges.parquet": ["src", "dst", "sum_kzt", "n_tx", "depth"],
+          "transactions.parquet": ["src", "dst", "date", "sum_kzt"]}
+ACTIVE = {"name": "исходная выгрузка", "uploaded": False}
 COLORS = {"coordinator": "#ef4444", "consolidator": "#f97316", "distributor": "#a855f7",
           "transit": "#3b82f6", "terminal": "#22c55e", "peripheral": "#64748b"}
 
@@ -95,7 +107,7 @@ def summary():
     return J({"nodes": len(df), "edges": G().number_of_edges(), "seeds": int(df.is_seed.sum()),
               "turnover": float(df.out_kzt.sum()), "roles": df.role.value_counts().to_dict(),
               "clusters": int(df.cluster_id.nunique()), "runtime_sec": meta["runtime_sec"],
-              "colors": COLORS, "role_ru": T.ROLE_RU, "model": meta["forward_model"],
+              "colors": COLORS, "dataset": ACTIVE, "role_ru": T.ROLE_RU, "model": meta["forward_model"],
               "thresholds": meta["thresholds"], "role_weight": meta["role_weight"],
               "max_depth": T.max_depth(), "period": T.period(), "fallbacks": meta.get("fallbacks", []),
               "depth4": {"total": int((df.depth == T.max_depth()).sum()),
@@ -264,6 +276,89 @@ def download(name: str):
     if name not in {"nodes_roles.csv", "clusters.csv", "top_nodes.csv", "run_meta.json", "data_requests.csv"}:
         raise HTTPException(404)
     return FileResponse(T.OUT / name, filename=name)
+
+
+# ------------------------------------------------------------------ своя выгрузка той же схемы
+def switch_out(path: Path, name: str, uploaded: bool):
+    """Переключить сервер на другую out-папку без перезапуска: сбросить кэши графа."""
+    T.OUT = path
+    T.state.cache_clear()
+    _curve.cache_clear()
+    agent.USE_MCP = not uploaded
+    ACTIVE.update({"name": name, "uploaded": uploaded})
+
+
+def check_upload(files: dict) -> dict:
+    names = set(files)
+    if names != set(SCHEMA):
+        missing, extra = sorted(set(SCHEMA) - names), sorted(names - set(SCHEMA))
+        raise HTTPException(400, "Нужны ровно 3 файла: " + ", ".join(SCHEMA)
+                            + (f". Не хватает: {', '.join(missing)}" if missing else "")
+                            + (f". Лишние: {', '.join(extra)}" if extra else ""))
+    frames = {}
+    for name, raw in files.items():
+        try:
+            df = pd.read_parquet(io.BytesIO(raw))
+        except Exception:  # noqa: BLE001
+            raise HTTPException(400, f"{name}: не удалось прочитать как parquet")
+        if sorted(df.columns) != sorted(SCHEMA[name]):
+            raise HTTPException(400, f"{name}: колонки должны быть ровно {', '.join(SCHEMA[name])}; "
+                                     f"получено {', '.join(map(str, df.columns))}")
+        frames[name] = df
+    nodes, edges, tx = frames["nodes.parquet"], frames["edges.parquet"], frames["transactions.parquet"]
+    try:
+        for col, s in [("nodes.gid", nodes.gid), ("edges.src", edges.src), ("edges.dst", edges.dst),
+                       ("transactions.src", tx.src), ("transactions.dst", tx.dst)]:
+            if not pd.api.types.is_integer_dtype(s):
+                raise HTTPException(400, f"{col}: ожидается целочисленный gid")
+        pd.to_datetime(tx.date)
+        pd.to_numeric(edges.sum_kzt), pd.to_numeric(tx.sum_kzt)
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "transactions.date должна быть датой, sum_kzt — числом")
+    if len(nodes) == 0 or not nodes.is_seed.any():
+        raise HTTPException(400, "nodes.parquet: нужен хотя бы один seed (is_seed = true)")
+    if not nodes.gid.is_unique:
+        raise HTTPException(400, "nodes.parquet: gid должны быть уникальны")
+    unknown = (set(edges.src) | set(edges.dst)) - set(nodes.gid)
+    if unknown:
+        raise HTTPException(400, f"edges.parquet: {len(unknown)} gid отсутствуют в nodes.parquet")
+    return {"nodes": len(nodes), "edges": len(edges), "transactions": len(tx)}
+
+
+@app.post("/api/upload", tags=["своя выгрузка"])
+def upload(files: list[UploadFile] = File(...)):
+    """Загрузить nodes/edges/transactions.parquet той же схемы, пересчитать пайплайн и переключиться на них."""
+    raw = {Path(f.filename or "").name: f.file.read() for f in files}
+    stats = check_upload(raw)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    base = UPLOADS / stamp
+    (base / "data").mkdir(parents=True, exist_ok=True)
+    for name, content in raw.items():
+        (base / "data" / name).write_bytes(content)
+    try:
+        r = subprocess.run([sys.executable, "pipeline.py", "--data", str(base / "data"), "--out", str(base / "out")],
+                           cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(400, "Пайплайн не уложился в 5 минут — активная выгрузка не изменена")
+    if r.returncode != 0 or not (base / "out" / "graph.pkl").exists():
+        tail = [ln.strip() for ln in (r.stdout + r.stderr).splitlines() if ln.strip()][-3:]
+        raise HTTPException(400, "Пайплайн завершился с ошибкой, активная выгрузка не изменена: " + " | ".join(tail))
+    switch_out(base / "out", f"загружено {stamp}", True)
+    return J({"ok": True, "dataset": ACTIVE, **stats})
+
+
+@app.post("/api/dataset/reset", tags=["своя выгрузка"])
+def dataset_reset():
+    """Вернуться к исходной выгрузке."""
+    switch_out(DEFAULT_OUT, "исходная выгрузка", False)
+    return J({"ok": True, "dataset": ACTIVE})
+
+
+@app.get("/api/dataset", tags=["своя выгрузка"])
+def dataset():
+    return J(ACTIVE)
 
 
 app.mount("/", StaticFiles(directory=ROOT / "web", html=True), name="web")

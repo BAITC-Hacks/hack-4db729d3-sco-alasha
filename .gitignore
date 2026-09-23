@@ -2,3 +2,4 @@ out/graph.pkl
 .venv/
 __pycache__/
 .env
+uploads/

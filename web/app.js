@@ -524,6 +524,38 @@ async function health() {
   $(".status-dot").style.background=h.mcp?"#4a9772":"#c69c5e";
  }catch{$("#pill-mcp").lastChild.textContent="Статус временно недоступен";}
 }
+// ------------------------------------------------------------------ своя выгрузка той же схемы
+function renderDataset() {
+  const d = S.summary.dataset || { name: "исходная выгрузка", uploaded: false };
+  $("#dataset-badge").textContent = d.name;
+  $("#dataset-badge").classList.toggle("uploaded", !!d.uploaded);
+  $("#btn-upload-reset").classList.toggle("hidden", !d.uploaded);
+}
+const uploadError = (e) => { try { return JSON.parse(e.message).detail || e.message; } catch { return e.message; } };
+async function uploadRun(url, body) {
+  const st = $("#upload-status"), btns = $$("#upload-form button");
+  btns.forEach(b => b.disabled = true);
+  st.className = "upload-status"; st.textContent = body ? "Загружаем и пересчитываем пайплайн… (до 5 минут)" : "Возвращаем исходную выгрузку…";
+  try {
+    const r = await api(url, { method: "POST", body });
+    st.textContent = body ? `Готово: ${fmtN(r.nodes)} узлов, ${fmtN(r.edges)} связей. Обновляем…` : "Готово. Обновляем…";
+    setTimeout(() => location.reload(), 600);   // KPI, топ-список, граф и кластеры — заново из новой выгрузки
+  } catch (e) {
+    st.className = "upload-status error"; st.textContent = "Ошибка: " + uploadError(e);
+    btns.forEach(b => b.disabled = false);
+  }
+}
+$("#btn-upload").onclick = () => { $("#upload-status").textContent = ""; $("#upload-dialog").showModal(); };
+$("#btn-upload-close").onclick = () => $("#upload-dialog").close();
+$("#btn-upload-reset").onclick = () => uploadRun("/api/dataset/reset", null);
+$("#btn-upload-go").onclick = () => {
+  const files = $("#upload-files").files;
+  if (!files.length) { $("#upload-status").className = "upload-status error"; $("#upload-status").textContent = "Выберите три файла .parquet"; return; }
+  const fd = new FormData();
+  [...files].forEach(f => fd.append("files", f));
+  uploadRun("/api/upload", fd);
+};
+
 async function start() {
  $$("[data-icon]").forEach(el=>el.innerHTML=icon(el.dataset.icon));
  initGraph();
@@ -531,6 +563,7 @@ async function start() {
  S.summary.colors=COLORS;
  const s=S.summary;
  $("#period-label").textContent=periodLabel();
+ renderDataset();
  const kpi=(name,value,label,note)=>`<div class="kpi"><span class="kpi-icon">${icon(name)}</span><div><div class="kpi-label">${label}</div><b>${value}</b><small>${note}</small></div></div>`;
  $("#kpis").innerHTML=kpi("users",fmtN(s.nodes),"Участников сети",`${s.seeds} исходный клиент · seed`)+
   kpi("money",`${(s.turnover/1e6).toFixed(0)} <span class="unit">млн ₸</span>`,"Общий оборот",`${fmtN(s.edges)} связей между клиентами`)+

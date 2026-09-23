@@ -113,3 +113,14 @@ body[data-view="stress"] .layout {
   body[data-view="ai"] .center,
   body[data-view="stress"] .center { height: auto; }
 }
+
+/* своя выгрузка: бейдж активного датасета и окно загрузки */
+.dataset-badge{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid #d6e0da;color:#4d6357;background:#f3f7f4;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.dataset-badge.uploaded{border-color:#e6b980;background:#fff5e8;color:#8a5a1c}
+.upload-dialog{border:1px solid #d6e0da;border-radius:14px;padding:0;max-width:520px;width:calc(100% - 32px)}
+.upload-dialog::backdrop{background:rgba(20,30,25,.35)}
+.upload-form{padding:20px;display:flex;flex-direction:column;gap:12px}
+.upload-form h2{margin:0;font-size:18px}
+.upload-status{min-height:20px;font-size:13px;color:#4d6357}
+.upload-status.error{color:#b42318}
+.upload-form .btn-row{display:flex;flex-wrap:wrap;gap:8px}
